@@ -1,0 +1,2336 @@
+import time
+import tkinter as tk
+from tkinter import ttk
+from tkinter import scrolledtext
+from tkinter import *
+from tkinter.ttk import Combobox
+from tkinter import messagebox as msg
+import threading
+import serial.tools.list_ports
+from serial import PARITY_ODD, PARITY_EVEN
+import datetime
+from PIL import ImageTk, Image
+import os
+
+ports_list = list(serial.tools.list_ports.comports())
+# 设置下拉框的值
+select_P = {''}
+for i in range(len(ports_list)):
+    select_P.add(str(ports_list[i]))
+select_E = {"9600"}
+select_D = {"8"}
+select_A = {"PARITY_ODD"}
+select_S = {"1"}
+data_Init = []
+data_Event = []
+data_IO = []
+data_AlarmHistory1 = []
+data_AlarmHistory2 = []
+data_CycleEvent = []
+data_CycleIO1 = []
+data_CycleIO2 = []
+data_CycleSum = []
+CycleEvent = [0x42, 0x52, 0x62, 0x72]
+CycleIO = [0x45, 0x55, 0x65, 0x75]
+InitSum = [0x44, 0x54, 0x64, 0x74]
+data_send = []
+for i in range(31):
+    data_Init.append([])
+    data_Event.append([])
+    data_IO.append([])
+    data_AlarmHistory1.append([])
+    data_AlarmHistory2.append([])
+for i in range(4):
+    data_CycleEvent.append([])
+    data_CycleIO1.append([])
+    data_CycleIO2.append([])
+    data_CycleSum.append([])
+
+    for j in range(31):
+        data_CycleEvent[i].append([])
+        data_CycleIO1[i].append([])
+        data_CycleIO2[i].append([])
+        data_CycleSum[i].append([])
+T = None
+flag = threading.Event()
+ser_a = None
+T1 = None
+flag1 = threading.Event()
+T2 = None
+flag2 = threading.Event()
+ser_b = None
+T3 = None
+flag3 = threading.Event()
+root = tk.Tk()
+root.title("HLink_Simulator  Ver:1.2")
+root.geometry("1221x1000")
+root.resizable(False, False)
+
+icon_path = "logo.ico"
+style = ttk.Style()
+# 创建一个样式，命名为Bold.TButton
+style.configure('Bold.TButton', font=('TkDefaultFont', 12, 'bold'))
+if os.path.exists(icon_path):
+    root.iconbitmap(icon_path)
+
+
+class ModuleStateTab(tk.Frame):
+    def __init__(self, master, modulestate_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.modulestate_name = modulestate_name
+        self.T = None
+        self.flag = threading.Event()
+        self.label = ttk.Label(root, text="选择显示的模块机号：")
+        self.position_frame = ttk.Labelframe(self, text="模块机数据")
+        self.position_frame.place(relx=0, rely=0, relwidth=1, relheight=0.312)
+        self.cycle_frame = ttk.Labelframe(self, text="Cycle数据")
+        self.cycle_frame.place(relx=0, rely=0.312, relwidth=1, relheight=0.7)
+        self.tabs = ttk.Notebook(self.position_frame)
+        self.Init_tab = InitTab(self.tabs, self.modulestate_name)
+        self.Event_tab = EventTab(self.tabs, self.modulestate_name)
+        self.IO_tab = IOTab(self.tabs, self.modulestate_name)
+        self.AlarmHistory_tab = AlarmHistoryTab(self.tabs, self.modulestate_name)
+        self.tabs.add(self.Init_tab, text='模块机初期值')
+        self.tabs.add(self.Event_tab, text='模块机事件')
+        self.tabs.add(self.IO_tab, text='模块机IO')
+        self.tabs.add(self.AlarmHistory_tab, text='模块机故障历史')
+        self.tabs.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.cycle_tabs = ttk.Notebook(self.cycle_frame)
+        self.cycle_tabs_list = []  # 创建一个列表用于存储所有的 CycleTab 实例
+        # 创建一个Combobox
+        self.combobox = ttk.Combobox(root, values=list(range(2, 33)))
+        self.label.place(relx=0.72, rely=0.0163)
+        self.combobox.place(relx=0.82, rely=0.015, width=50)
+        self.combobox.current(0)
+
+        for j in range(1, 5):
+            self.cycle_state_tab = CycleTab(self.cycle_tabs, str(j + 4 * (int(self.modulestate_name) - 1)))
+            self.cycle_tabs_list.append(self.cycle_state_tab)  # 将每个 CycleTab 实例添加到列表中
+            self.cycle_tabs.add(self.cycle_state_tab, text='制冷循环' + str(j))
+
+        self.cycle_tabs.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.start()
+
+    def start(self):
+        if self.T is None or not self.T.is_alive():
+            self.flag.set()
+            self.T = threading.Thread(target=self.update_data)
+            self.T.setDaemon(True)
+            self.T.start()
+
+    def stop(self):
+        self.flag.clear()
+
+    def update_data(self):
+
+        while True:
+            time.sleep(1)
+            id = int(self.combobox.get()) - 2
+            self.update_Init(id)
+            self.update_Event(id)
+            self.update_IO(id)
+            self.update_AlarmHistory(id)
+            self.update_CycleEvent(id)
+            self.update_CycleIO(id)
+            self.update_CycleSum(id)
+
+    def update_Init(self, id):
+        if len(data_Init[id]) > 0:
+            binary_string = bin(data_Init[id][11])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(7):
+                self.Init_tab.entries[i].config(state='normal')
+                self.Init_tab.entries[i].delete(0, "end")  # 清空文本框中的内容
+            if binary_string[0] == '1':
+                self.Init_tab.entries[0].insert(0, "Tier3")
+            else:
+                self.Init_tab.entries[0].insert(0, "Tier1")
+            if binary_string[1] == '1':
+                self.Init_tab.entries[1].insert(0, "低温系列")
+            else:
+                self.Init_tab.entries[1].insert(0, "标温系列")
+            temp = int(binary_string[2:4], 2)
+            if temp == 1:
+                self.Init_tab.entries[2].insert(0, "四管制系列")
+            elif temp == 2:
+                self.Init_tab.entries[2].insert(0, "热回收系列")
+            elif temp == 3:
+                self.Init_tab.entries[2].insert(0, "热水机")
+            else:
+                self.Init_tab.entries[2].insert(0, "二管制系列")
+            if binary_string[4] == '1':
+                self.Init_tab.entries[3].insert(0, "非共用水泵")
+            else:
+                self.Init_tab.entries[3].insert(0, "共用水泵")
+            if binary_string[5] == '1':
+                self.Init_tab.entries[4].insert(0, "加防冻液")
+            else:
+                self.Init_tab.entries[4].insert(0, "标准热泵")
+            if binary_string[6] == '1':
+                self.Init_tab.entries[5].insert(0, "来电重启")
+            else:
+                self.Init_tab.entries[5].insert(0, "来电待机")
+            if binary_string[7] == '1':
+                self.Init_tab.entries[6].insert(0, "测试模式")
+            else:
+                self.Init_tab.entries[6].insert(0, "正常模式")
+            for i in range(7):
+                self.Init_tab.entries[i].config(state='readonly')
+            binary_string = bin(data_Init[id][12])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(2):
+                self.Init_tab.entries[i + 7].config(state='normal')
+                self.Init_tab.entries[i + 7].delete(0, "end")  # 清空文本框中的内容
+            temp = int(binary_string[:3], 2)
+            if temp == 1:
+                self.Init_tab.entries[7].insert(0, "130kw")
+            elif temp == 2:
+                self.Init_tab.entries[7].insert(0, "45kw")
+            elif temp == 3:
+                self.Init_tab.entries[7].insert(0, "260kw")
+            elif temp == 4:
+                self.Init_tab.entries[7].insert(0, "160kw")
+            elif temp == 5:
+                self.Init_tab.entries[7].insert(0, "300kw")
+            else:
+                self.Init_tab.entries[7].insert(0, "65kw")
+            temp = int(binary_string[3:], 2)
+            self.Init_tab.entries[8].insert(0, temp)
+            for i in range(2):
+                self.Init_tab.entries[i + 7].config(state='readonly')
+            binary_string = bin(data_Init[id][13])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            self.Init_tab.entries[9].config(state='normal')
+            self.Init_tab.entries[9].delete(0, "end")  # 清空文本框中的内容
+            temp = int(binary_string[2:4], 2)
+            if temp == 1:
+                self.Init_tab.entries[9].insert(0, "30Pa")
+            elif temp == 2:
+                self.Init_tab.entries[9].insert(0, "50Pa")
+            elif temp == 3:
+                self.Init_tab.entries[9].insert(0, "80Pa")
+            else:
+                self.Init_tab.entries[9].insert(0, "无静压")
+            self.Init_tab.entries[9].config(state='readonly')
+            for i in range(28):
+                self.Init_tab.entries[i + 10].config(state='normal')
+                self.Init_tab.entries[i + 10].delete(0, "end")  # 清空文本框中的内容
+                # 获取输入的值
+                input_value = hex(data_Init[id][15 + i])
+                # 确保输入为两位的十六进制数
+                if len(input_value) == 3:  # 如果输入只有一个数字加上前缀 "0x"
+                    input_value = "0x0" + input_value[-1]
+                elif len(input_value) == 4:  # 如果输入有两个数字加上前缀 "0x"
+                    input_value = input_value[:2] + "0" + input_value[2:]
+                self.Init_tab.entries[i + 10].insert(0, input_value)
+                self.Init_tab.entries[i + 10].config(state='readonly')
+
+    def update_Event(self, id):
+        if len(data_Event[id]) > 0:
+
+            binary_string = bin(data_Event[id][11])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            if binary_string[1] == "1":
+                self.Event_tab.canvas.itemconfig(self.Event_tab.lights[0], fill="light green")
+            else:
+                self.Event_tab.canvas.itemconfig(self.Event_tab.lights[0], fill="light grey")
+            for i in range(5):
+                if binary_string[i + 3] == "1":
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 1], fill="light green")
+                else:
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 1], fill="light grey")
+            binary_string = bin(data_Event[id][12])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(len(binary_string)):
+                if binary_string[i] == "1":
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 6], fill="light green")
+                else:
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 6], fill="light grey")
+            binary_string = bin(data_Event[id][13])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(5):
+                if binary_string[i + 3] == "1":
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 14], fill="light green")
+                else:
+                    self.Event_tab.canvas.itemconfig(self.Event_tab.lights[i + 14], fill="light grey")
+            for i in range(4):
+                binary_string = bin(data_Event[id][15 + i])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                for j in range(len(binary_string)):
+                    if binary_string[j] == "1":
+                        self.Event_tab.canvas.itemconfig(self.Event_tab.lights[j + 21 + i * 8], fill="pink")
+                    else:
+                        self.Event_tab.canvas.itemconfig(self.Event_tab.lights[j + 21 + i * 8], fill="light grey")
+
+            for i in range(3):
+                binary_string = bin(data_Event[id][19 + i // 2])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                if i == 1:
+                    temp = int(binary_string[4:], 2)
+                else:
+                    temp = int(binary_string[0:4], 2)
+                self.Event_tab.entries[i].config(state='normal')
+                self.Event_tab.entries[i].delete(0, "end")  # 清空文本框中的内容
+                self.Event_tab.entries[i].insert(0, temp)  # 清空文本框中的内容
+                self.Event_tab.entries[i].config(state='readonly')
+            for i in range(21, 21 + 2 * 6, 2):
+                self.Event_tab.entries[(i - 19) // 2 + 2].config(state='normal')
+                self.Event_tab.entries[(i - 19) // 2 + 2].delete(0, "end")  # 清空文本框中的内容
+                value = (data_Event[id][i] << 8) | data_Event[id][i + 1]
+                if i == 21:
+                    if value == 0:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "停止中")
+                    elif value == 1:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "等待反馈")
+                    elif value == 2:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "运转中")
+                    elif value == 3:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "手动强制")
+                    else:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "防冻结")
+                elif i == 23:
+                    self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "系统要求")
+                elif i == 25:
+                    if value == 1:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "制热")
+                    elif value == 2:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "制冷")
+                    else:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, "无")
+                elif i == 27 or i == 29 or i == 31:
+                    # self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, str(value // 10) + '.' + str(
+                    #     value % 10))  # 在文本框中插入数据
+                    if value > 32767:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0, '-' + str((65536 - value) // 10) + '.' + str(
+                            (65536 - value) % 10))  # 在文本框中插入数据
+                    else:
+                        self.Event_tab.entries[(i - 19) // 2 + 2].insert(0,
+                                           str(value // 10) + '.' + str(value % 10))  # 在文本框中插入数据
+                self.Event_tab.entries[(i - 19) // 2 + 2].config(state='readonly')
+
+    def update_IO(self, id):
+        if len(data_IO[id]) > 0:
+            binary_string = bin(data_IO[id][11])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(8):
+                if binary_string[i] == "1":
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i], fill="light green")
+                else:
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i], fill="light grey")
+            binary_string = bin(data_IO[id][12])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            for i in range(7):
+                if binary_string[i + 1] == "1":
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 8], fill="light green")
+                else:
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 8], fill="light grey")
+            binary_string = bin(data_IO[id][13])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+
+            for i in range(3):
+                if binary_string[i + 1] == "1":
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 15], fill="light green")
+                else:
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 15], fill="light grey")
+            for i in range(3):
+                if binary_string[i + 5] == "1":
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 18], fill="light green")
+                else:
+                    self.IO_tab.canvas.itemconfig(self.IO_tab.lights[i + 18], fill="light grey")
+            for i in range(17, 17 + 2 * 5, 2):
+                self.IO_tab.entries[(i - 17) // 2].config(state='normal')
+                self.IO_tab.entries[(i - 17) // 2].delete(0, "end")  # 清空文本框中的内容
+                value = (data_IO[id][i] << 8) | data_IO[id][i + 1]
+                if i == 23:
+                    continue
+                elif i == 17 or i == 19 or i == 21:
+                    # self.IO_tab.entries[(i - 17) // 2].insert(0, str(value // 10) + '.' + str(
+                    #     value % 10))  # 在文本框中插入数据
+                    if value > 32767:
+                        self.IO_tab.entries[(i - 17) // 2].insert(0, '-' + str((65536 - value) // 10) + '.' + str(
+                            (65536 - value) % 10))  # 在文本框中插入数据
+                    else:
+                        self.IO_tab.entries[(i - 17) // 2].insert(0,
+                                           str(value // 10) + '.' + str(value % 10))  # 在文本框中插入数据
+                elif i == 25:
+                    # self.IO_tab.entries[(i - 17) // 2 - 1].insert(0, str(value // 10) + '.' + str(
+                    #     value % 10))  # 在文本框中插入数据
+                    if value > 32767:
+                        self.IO_tab.entries[(i - 17) // 2 - 1].insert(0, '-' + str((65536 - value) // 10) + '.' + str(
+                            (65536 - value) % 10))  # 在文本框中插入数据
+                    else:
+                        self.IO_tab.entries[(i - 17) // 2 - 1].insert(0,
+                                           str(value // 10) + '.' + str(value % 10))  # 在文本框中插入数据
+                    self.IO_tab.entries[(i - 17) // 2 - 1].config(state='readonly')
+                self.IO_tab.entries[(i - 17) // 2].config(state='readonly')
+            for i in range(39, 39 + 2 * 2, 2):
+                self.IO_tab.entries[(i - 39) // 2 + 4].config(state='normal')
+                self.IO_tab.entries[(i - 39) // 2 + 4].delete(0, "end")  # 清空文本框中的内容
+                value = (data_IO[id][i] << 8) | data_IO[id][i + 1]
+                self.IO_tab.entries[(i - 39) // 2 + 4].insert(0, value)  # 在文本框中插入数据
+                self.IO_tab.entries[(i - 39) // 2 + 4].config(state='readonly')
+
+    def update_AlarmHistory(self, id):
+        if len(data_AlarmHistory1[id]) > 0:
+            value = (data_AlarmHistory1[id][11] << 8) | data_AlarmHistory1[id][12]
+            self.AlarmHistory_tab.entries[0].config(state='normal')
+            self.AlarmHistory_tab.entries[0].delete(0, "end")  # 清空文本框中的内容
+            self.AlarmHistory_tab.entries[0].insert(0, value)  # 在文本框中插入数据
+            self.AlarmHistory_tab.entries[0].config(state='readonly')
+            if 0 < value <= 17:
+                for i in range(13, 13 + value * 2, 2):
+                    value1 = (data_AlarmHistory1[id][i] << 8) | data_AlarmHistory1[id][i + 1]
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].config(state='normal')
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].delete(0, "end")  # 清空文本框中的内容
+                    # 获取16位二进制数的十六进制表示
+                    hex_value = hex(value1)
+                    # 去掉十六进制表示中的前缀 "0x" 并补齐为四位数
+                    hex_value = hex_value[2:].zfill(4)
+                    # 添加 "0x" 前缀
+                    hex_value = "0x" + hex_value
+                    # 在文本框中插入数据
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].insert(0, hex_value)
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].config(state='readonly')
+                for i in range(len(self.AlarmHistory_tab.entries) - value - 1):
+                    self.AlarmHistory_tab.entries[i + 1 + value].config(state='normal')
+                    self.AlarmHistory_tab.entries[i + 1 + value].delete(0, "end")  # 清空文本框中的内容
+                    self.AlarmHistory_tab.entries[i + 1 + value].config(state='readonly')
+
+            elif 17 < value <= 32:
+                for i in range(13, 13 + 17 * 2, 2):
+                    value1 = (data_AlarmHistory1[id][i] << 8) | data_AlarmHistory1[id][i + 1]
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].config(state='normal')
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].delete(0, "end")  # 清空文本框中的内容
+                    # 获取16位二进制数的十六进制表示
+                    hex_value = hex(value1)
+                    # 去掉十六进制表示中的前缀 "0x" 并补齐为四位数
+                    hex_value = hex_value[2:].zfill(4)
+                    # 添加 "0x" 前缀
+                    hex_value = "0x" + hex_value
+                    # 在文本框中插入数据
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].insert(0, hex_value)
+                    self.AlarmHistory_tab.entries[(i - 13) // 2 + 1].config(state='readonly')
+                if len(data_AlarmHistory2[id]) > 0:
+                    for i in range(13, 13 + (value - 17) * 2, 2):
+                        value1 = (data_AlarmHistory2[id][i] << 8) | data_AlarmHistory2[id][i + 1]
+                        self.AlarmHistory_tab.entries[(i - 13) // 2 + 18].config(state='normal')
+                        self.AlarmHistory_tab.entries[(i - 13) // 2 + 18].delete(0, "end")  # 清空文本框中的内容
+                        # 获取16位二进制数的十六进制表示
+                        hex_value = hex(value1)
+                        # 去掉十六进制表示中的前缀 "0x" 并补齐为四位数
+                        hex_value = hex_value[2:].zfill(4)
+                        # 添加 "0x" 前缀
+                        hex_value = "0x" + hex_value
+                        # 在文本框中插入数据
+                        self.AlarmHistory_tab.entries[(i - 13) // 2 + 18].insert(0, hex_value)
+                        self.AlarmHistory_tab.entries[(i - 13) // 2 + 18].config(state='readonly')
+                for i in range(len(self.AlarmHistory_tab.entries) - value - 1):
+                    self.AlarmHistory_tab.entries[i + 1 + value].config(state='normal')
+                    self.AlarmHistory_tab.entries[i + 1 + value].delete(0, "end")  # 清空文本框中的内容
+                    self.AlarmHistory_tab.entries[i + 1 + value].config(state='readonly')
+
+    def update_CycleEvent(self, id):
+        for i in range(4):
+            if len(data_CycleEvent[i][id]) > 0:
+                binary_string = bin(data_CycleEvent[i][id][11])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                for j in range(5):
+                    if binary_string[j] == "1":
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j],
+                                                                   fill="light green")
+                    else:
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j],
+                                                                   fill="light grey")
+                for j in range(2):
+                    if binary_string[j + 6] == "1":
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j + 5],
+                                                                   fill="light green")
+                    else:
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j + 5],
+                                                                   fill="light grey")
+                binary_string = bin(data_CycleEvent[i][id][12])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                for j in range(2):
+                    if binary_string[j + 6] == "1":
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j + 7],
+                                                                   fill="light green")
+                    else:
+                        self.cycle_tabs_list[i].canvas2.itemconfig(self.cycle_tabs_list[i].lights2[j + 7],
+                                                                   fill="light grey")
+                for k in range(16):
+                    binary_string = bin(data_CycleEvent[i][id][17 + k])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                    for j in range(8):
+                        if binary_string[j] == "1":
+                            self.cycle_tabs_list[i].canvas.itemconfig(self.cycle_tabs_list[i].lights[j + 8 * k],
+                                                                      fill="pink")
+                        else:
+                            self.cycle_tabs_list[i].canvas.itemconfig(self.cycle_tabs_list[i].lights[j + 8 * k],
+                                                                      fill="light grey")
+                binary_string = bin(data_CycleEvent[i][id][33])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                temp = int(binary_string[:4], 2)
+                self.cycle_tabs_list[i].entries[0].config(state='normal')
+                self.cycle_tabs_list[i].entries[0].delete(0, "end")  # 清空文本框中的内容
+                if temp == 0:
+                    self.cycle_tabs_list[i].entries[0].insert(0, "无保护")  # 在文本框中插入数据
+                elif temp == 1:
+                    self.cycle_tabs_list[i].entries[0].insert(0, "禁止↑")  # 在文本框中插入数据
+                elif temp == 2:
+                    self.cycle_tabs_list[i].entries[0].insert(0, "禁止↓")  # 在文本框中插入数据
+                elif temp == 3:
+                    self.cycle_tabs_list[i].entries[0].insert(0, "强制↑")  # 在文本框中插入数据
+                else:
+                    self.cycle_tabs_list[i].entries[0].insert(0, "强制↓")  # 在文本框中插入数据
+                self.cycle_tabs_list[i].entries[0].config(state='readonly')
+                for k in range(3):
+                    binary_string = bin(data_CycleEvent[i][id][34 + k])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                    for l in range(4):
+                        self.cycle_tabs_list[i].entries[1 + l + k * 4].config(state='normal')
+                        self.cycle_tabs_list[i].entries[1 + l + k * 4].delete(0, "end")  # 清空文本框中的内容
+                        if l == 0:
+                            temp = int(binary_string[:2], 2)
+                        elif l == 1:
+                            temp = int(binary_string[2:4], 2)
+                        elif l == 2:
+                            temp = int(binary_string[4:6], 2)
+                        else:
+                            temp = int(binary_string[6:], 2)
+                        if temp == 1:
+                            self.cycle_tabs_list[i].entries[1 + l + k * 4].insert(0, "禁止↓")
+                        elif temp == 2:
+                            self.cycle_tabs_list[i].entries[1 + l + k * 4].insert(0, "强制↑")
+                        else:
+                            self.cycle_tabs_list[i].entries[1 + l + k * 4].insert(0, "无保护")
+                        self.cycle_tabs_list[i].entries[1 + l + k * 4].config(state='readonly')
+
+    def update_CycleIO(self, id):
+        for i in range(4):
+            if len(data_CycleIO1[i][id]) > 0:
+                binary_string = bin(data_CycleIO1[i][id][11])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+                for j in range(8):
+                    self.cycle_tabs_list[i].entries1[j].config(state='normal')
+                    self.cycle_tabs_list[i].entries1[j].delete(0, "end")  # 清空文本框中的内容
+                    if binary_string[j] == "1":
+                        self.cycle_tabs_list[i].entries1[j].insert(0, "ON")
+                    else:
+                        self.cycle_tabs_list[i].entries1[j].insert(0, "OFF")
+                    self.cycle_tabs_list[i].entries1[j].config(state='readonly')
+                for k in range(13, 13 + 2 * 17, 2):
+                    self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].config(state='normal')
+                    self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].delete(0, "end")  # 清空文本框中的内容
+                    value = (data_CycleIO1[i][id][k] << 8) | data_CycleIO1[i][id][k + 1]
+                    if 13 <= k <= 15:
+                        hex_value = hex(value)
+                        # 去掉十六进制表示中的前缀 "0x" 并补齐为四位数
+                        hex_value = hex_value[2:].zfill(4)
+                        # 添加 "0x" 前缀
+                        hex_value = "0x" + hex_value
+                        self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].insert(0, hex_value)  # 在文本框中插入数据
+                    elif 21 <= k <= 29 or 39 <= k <= 41:
+                        self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].insert(0, str(value // 10) + '.' + str(
+                            value % 10))  # 在文本框中插入数据
+                    elif k == 37:
+                        self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].insert(0, str(value // 100) + '.' + str(
+                            value % 100))  # 在文本框中插入数据
+                    elif 17 <= k <= 19 or 31 <= k <= 35 or 43 <= k <= 45:
+                        self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].insert(0, value)  # 在文本框中插入数据
+                    self.cycle_tabs_list[i].entries1[(k - 13) // 2 + 8].config(state='readonly')
+            if len(data_CycleIO2[i][id]) > 0:
+                for k in range(11, 11 + 2 * 5, 2):
+                    self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].config(state='normal')
+                    self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].delete(0, "end")  # 清空文本框中的内容
+                    value = (data_CycleIO2[i][id][k] << 8) | data_CycleIO2[i][id][k + 1]
+
+                    if k == 19:
+                        # self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0, str(value // 10) + '.' + str(
+                        #     value % 10))  # 在文本框中插入数据
+                        if value > 32767:
+                            self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0,
+                                                                          '-' + str((65536 - value) // 10) + '.' + str(
+                                                                              (65536 - value) % 10))  # 在文本框中插入数据
+                        else:
+                            self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0,
+                                                                          str(value // 10) + '.' + str(
+                                                                              value % 10))  # 在文本框中插入数据
+                    elif k == 15 or k == 17:
+                        # self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0, str(value // 100) + '.' + str(
+                        #     value % 100))  # 在文本框中插入数据
+                        if value > 32767:
+                            self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0,
+                                                                          '-' + str((65536 - value) // 100) + '.' + str(
+                                                                              (65536 - value) % 100))  # 在文本框中插入数据
+                        else:
+                            self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0,
+                                                                          str(value // 100) + '.' + str(
+                                                                              value % 100))  # 在文本框中插入数据
+                    elif k == 11 or k == 13:
+                        self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].insert(0, value)  # 在文本框中插入数据
+                    self.cycle_tabs_list[i].entries1[(k - 11) // 2 + 25].config(state='readonly')
+
+    def update_CycleSum(self, id):
+        for i in range(4):
+            if len(data_CycleSum[i][id]) > 0:
+                for k in range(15, 15 + 2 * 6, 2):
+                    self.cycle_tabs_list[i].entries2[(k - 15) // 2].config(state='normal')
+                    self.cycle_tabs_list[i].entries2[(k - 15) // 2].delete(0, "end")  # 清空文本框中的内容
+                    value = (data_CycleSum[i][id][k] << 8) | data_CycleSum[i][id][k + 1]
+                    self.cycle_tabs_list[i].entries2[(k - 15) // 2].insert(0, value)  # 在文本框中插入数据
+                    self.cycle_tabs_list[i].entries2[(k - 15) // 2].config(state='readonly')
+                for k in range(4):
+                    self.cycle_tabs_list[i].entries2[6 + k].config(state='normal')
+                    self.cycle_tabs_list[i].entries2[6 + k].delete(0, "end")  # 清空文本框中的内容
+                    input_value = hex(data_CycleSum[i][id][k + 11])
+                    input_value_formatted = input_value[2:].zfill(2)  # 去掉开头的"0x"，并在左侧用0填充为两位
+                    self.cycle_tabs_list[i].entries2[6 + k].insert(0, "0x"+input_value_formatted)
+                    self.cycle_tabs_list[i].entries2[6 + k].config(state='readonly')
+
+
+class InitTab(tk.Frame):
+    def __init__(self, master, Init_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.Init_name = Init_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.labels = []
+        self.entries = []
+        for i in range(49):
+            col = i // 7  # 计算列数
+            row = i % 7  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=6, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.frame, state="readonly", width=7, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=6)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='Tier系列')
+        self.labels[1].config(text='温度系列')
+        self.labels[2].config(text='产品系列')
+        self.labels[3].config(text='公用水泵')
+        self.labels[4].config(text='水循环介质')
+        self.labels[5].config(text='来电后状态')
+        self.labels[6].config(text='测试模式')
+        self.labels[7].config(text='产品容量')
+        self.labels[8].config(text='模块地址号')
+        self.labels[9].config(text='静压设定')
+        self.labels[10].config(text='主ROM高位')
+        self.labels[11].config(text='主ROM低位')
+        self.labels[12].config(text='从ROM高位')
+        self.labels[13].config(text='从ROM低位')
+        for i in range(16):
+            self.labels[14 + i].config(text='型式' + str(i + 1))
+        for i in range(8):
+            self.labels[30 + i].config(text='製番' + str(i + 1))
+        self.label = ttk.Label(self,
+                               text="说明：\nTier系列:Tier3为1 Tier1为0\n温度系列:低温系列为1 标温系列为0\n产品系列:二管制系列为0 四管制系列为1 热回收系列为2 热水机为3\n"
+                                    "公用水泵:非公用水泵为1 公用水泵为0\n水循环介质:加防冻液为1 标准热泵为0\n来电后状态:来电重启为1 来电待机为0\n测试模式:测试模式为1 正常模式为0\n产品容量:65kw为0 "
+                                    "130kw为1 45kw为2 260kw为3 160kw为4 300kw为5\n静压设定:无静压为0 30Pa为1 50pa为2 80Pa为3\n剩余部分除模块机地址外其余均输入0x00~0xFF格式数据",
+                               font=("黑体", 11))
+
+
+class EventTab(tk.Frame):
+    def __init__(self, master, Event_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.Event_name = Event_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.entry_frame = ttk.Frame(self)
+        self.entry_frame.place(relx=0.58, rely=0.02, relwidth=0.42, relheight=1)
+        self.canvas = tk.Canvas(self.frame)
+        self.canvas.place(relx=0, rely=0, relwidth=0.75)
+        # 创建21个指示灯
+        self.lights = []
+        self.texts = []
+        for i in range(21):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+            if col == 2:
+                x = 6 + col * 75  # 调整x坐标的值，使第二列灯向右移动
+                y = 6 + row * 27
+            else:
+                x = 6 + col * 88  # 调整x坐标的值，使第二列灯向右移动
+                y = 6 + row * 27
+            self.light = self.canvas.create_oval(x, y, x + 16, y + 16, outline="SystemButtonFace",
+                                                 fill="light grey")  # 使用 create_oval 创建圆形
+            self.lights.append(self.light)
+
+            # 在灯的右侧添加文本
+            text_x = x + 18  # 文本的x坐标，将文本调整到灯的右侧
+            text_y = y + 8  # 文本的y坐标，使其垂直居中
+            self.text = self.canvas.create_text(text_x, text_y, text="保留", anchor=tk.W, fill="black")
+
+            self.texts.append(self.text)
+        self.canvas.create_line(227, 0, 227, 300, fill="light grey")
+        self.canvas.itemconfig(self.texts[0], text="警报全Cycle")
+        self.canvas.itemconfig(self.texts[1], text="警报")
+        self.canvas.itemconfig(self.texts[2], text="手动送风")
+        self.canvas.itemconfig(self.texts[3], text="电流限制")
+        self.canvas.itemconfig(self.texts[4], text="单元可运行")
+        self.canvas.itemconfig(self.texts[5], text="强制满负荷")
+        self.canvas.itemconfig(self.texts[6], text="夜间静音")
+        self.canvas.itemconfig(self.texts[7], text="除霜许可")
+        self.canvas.itemconfig(self.texts[8], text="除霜完成")
+        self.canvas.itemconfig(self.texts[9], text="警告")
+        self.canvas.itemconfig(self.texts[10], text="除霜中")
+        self.canvas.itemconfig(self.texts[11], text="隔离中")
+        self.canvas.itemconfig(self.texts[12], text="Thermal")
+        self.canvas.itemconfig(self.texts[13], text="单元运行")
+        self.canvas.itemconfig(self.texts[14], text="固件升级中")
+        self.canvas.itemconfig(self.texts[15], text="急停中")
+        self.canvas.itemconfig(self.texts[16], text="强制停机")
+        self.canvas.itemconfig(self.texts[17], text="防冻保护")
+        self.canvas.itemconfig(self.texts[18], text="强制除霜")
+        for i in range(32):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            x = 235 + col * 42  # 调整x坐标的值，使第二列灯向右移动
+            y = 6 + row * 27
+
+            self.light = self.canvas.create_oval(x, y, x + 16, y + 16, outline="SystemButtonFace",
+                                                 fill="light grey")  # 使用 create_oval 创建圆形
+            self.lights.append(self.light)
+
+            # 在灯的右侧添加文本
+            text_x = x + 18  # 文本的x坐标，将文本调整到灯的右侧
+            text_y = y + 8  # 文本的y坐标，使其垂直居中
+            if 31 - i < 10:
+                self.text = self.canvas.create_text(text_x, text_y, text='0' + str(31 - i) + 'b', anchor=tk.W,
+                                                    fill="black")
+            else:
+                self.text = self.canvas.create_text(text_x, text_y, text=str(31 - i) + 'b', anchor=tk.W,
+                                                    fill="black")
+
+            self.texts.append(self.text)
+        self.canvas.create_line(408, 0, 408, 300, fill="light grey")
+        self.labels = []
+        self.entries = []
+        for i in range(27):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.entry_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, state="readonly", width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=3, pady=2)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='可运转Cycle数')
+        self.labels[1].config(text='已运转Cycle数')
+        self.labels[2].config(text='可关闭Cycle数')
+        self.labels[3].config(text='水泵状态')
+        self.labels[4].config(text='运转起因')
+        self.labels[5].config(text='运转模式')
+        self.labels[6].config(text='压机可载和/Hz')
+        self.labels[7].config(text='压机可减和/Hz')
+        self.labels[8].config(text='压机额定和/Hz')
+
+
+class EventTab_Send(tk.Frame):
+    def __init__(self, master, Event_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.Event_name = Event_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.entry_frame = ttk.Frame(self)
+        self.entry_frame.place(relx=0.58, rely=0.02, relwidth=0.42, relheight=1)
+        self.checkboxes = []
+        self.variables = []
+        self.texts = ["警报全Cycle", "警报", "手动送风", "电流限制", "单元可运行", "强制满负荷", "夜间静音", "除霜许可", "除霜完成", "警告",
+                      "除霜中", "隔离中", "Thermal", "单元运行", "固件升级中", "急停中", "强制停机", "防冻保护", "强制除霜"]
+
+        for i, text in enumerate(self.texts):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.frame, text=text, variable=var)
+            self.checkbox.grid(row=i % 10, column=i // 10, sticky="w")
+            self.checkbox.bind('<Return>', lambda event: change_Event())
+            self.variables.append(var)
+        self.labels = []
+        self.entries = []
+        for i in range(27):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.entry_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, state="readonly", width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=3, pady=2)
+            self.entry.bind('<Return>', lambda event: change_Event())
+            self.entries.append(self.entry)
+        self.labels[0].config(text='可运转Cycle数')
+        self.labels[1].config(text='已运转Cycle数')
+        self.labels[2].config(text='可关闭Cycle数')
+        self.labels[3].config(text='水泵状态')
+        self.labels[4].config(text='运转起因')
+        self.labels[5].config(text='运转模式')
+        self.labels[6].config(text='压机可载和/Hz')
+        self.labels[7].config(text='压机可减和/Hz')
+        self.labels[8].config(text='压机额定和/Hz')
+        self.label = ttk.Label(self,
+                               text="说明：\n水泵状态：停止中为0 等待反馈中为1 运转中为2\n          手动强制运转为3 防冻结运转为4\n运转起因：系统部要求为1\n运转模式：制热为1 制冷为2 停止为0"
+                                    "\n频率输入范围为0.0~800.0Hz\n故障输入范围为0x00000000~0xFFFFFFFF", font=("黑体", 11))
+        self.label.place(relx=0, rely=0.4)
+
+
+class IOTab(tk.Frame):
+    def __init__(self, master, IO_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.IO_name = IO_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.entry_frame = ttk.Frame(self)
+        self.entry_frame.place(relx=0.56, rely=0.02, relwidth=0.44, relheight=1)
+        self.canvas = tk.Canvas(self.frame)
+        self.canvas.place(relx=0, rely=0, relwidth=0.75)
+        # 创建21个指示灯
+        self.lights = []
+        self.texts = []
+        for i in range(21):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+            x = 6 + col * 120  # 调整x坐标的值，使第二列灯向右移动
+            y = 6 + row * 27
+            self.light = self.canvas.create_oval(x, y, x + 16, y + 16, outline="SystemButtonFace",
+                                                 fill="light grey")  # 使用 create_oval 创建圆形
+            self.lights.append(self.light)
+
+            # 在灯的右侧添加文本
+            text_x = x + 18  # 文本的x坐标，将文本调整到灯的右侧
+            text_y = y + 8  # 文本的y坐标，使其垂直居中
+            self.text = self.canvas.create_text(text_x, text_y, text="保留", anchor=tk.W, fill="black")
+
+            self.texts.append(self.text)
+        self.canvas.create_line(395, 0, 395, 300, fill="light grey")
+        self.canvas.itemconfig(self.texts[0], text="故障输出DO8")
+        self.canvas.itemconfig(self.texts[1], text="底盘加热带#2DO7")
+        self.canvas.itemconfig(self.texts[2], text="底盘加热带#1DO6")
+        self.canvas.itemconfig(self.texts[3], text="热水水阀DO15")
+        self.canvas.itemconfig(self.texts[4], text="水阀DO14")
+        self.canvas.itemconfig(self.texts[5], text="辅助水电加热DO3")
+        self.canvas.itemconfig(self.texts[6], text="防冻电加热2DO23")
+        self.canvas.itemconfig(self.texts[7], text="水泵DO9")
+
+        self.canvas.itemconfig(self.texts[8], text="二次泵反馈DI7")
+        self.canvas.itemconfig(self.texts[9], text="水泵过载反馈DI6")
+        self.canvas.itemconfig(self.texts[10], text="紧急联动关DI5")
+        self.canvas.itemconfig(self.texts[11], text="远程DI DI14")
+        self.canvas.itemconfig(self.texts[12], text="远程冷热模式切换DI3")
+        self.canvas.itemconfig(self.texts[13], text="系统水流开关DI2")
+        self.canvas.itemconfig(self.texts[14], text="单元水流开关DI1")
+        self.canvas.itemconfig(self.texts[15], text="制冷低压开关DI12")
+        self.canvas.itemconfig(self.texts[16], text="电源保护DI11")
+        self.canvas.itemconfig(self.texts[17], text="制热低压开关DI11")
+        self.canvas.itemconfig(self.texts[18], text="系统热水水流开关DI10")
+        self.canvas.itemconfig(self.texts[19], text="系统热水泵控制DO22")
+        self.canvas.itemconfig(self.texts[20], text="模块热水水流开关DI9")
+        self.labels = []
+        self.entries = []
+        for i in range(27):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.entry_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, state="readonly", width=7, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=3, pady=2)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='回水温度/℃')
+        self.labels[1].config(text='出水温度/℃')
+        self.labels[2].config(text='总出水温/℃')
+        self.labels[3].config(text='室外环温/℃')
+        self.labels[4].config(text='累耗电量Hi')
+        self.labels[5].config(text='累耗电量Lo')
+
+
+class IOTab_Send(tk.Frame):
+    def __init__(self, master, IO_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.IO_name = IO_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.entry_frame = ttk.Frame(self)
+        self.entry_frame.place(relx=0.56, rely=0.02, relwidth=0.44, relheight=1)
+        self.checkboxes = []
+        self.variables = []
+        self.texts = [
+            "故障输出DO8",
+            "底盘加热带#2DO7",
+            "底盘加热带#1DO6",
+            "热水水阀DO15",
+            "水阀DO14",
+            "辅助水电加热DO3",
+            "防冻电加热2DO23",
+            "水泵DO9",
+            "二次泵反馈DI7",
+            "水泵过载反馈DI6",
+            "紧急联动关DI5",
+            "远程DI DI14",
+            "远程冷热模式切换DI3",
+            "系统水流开关DI2",
+            "单元水流开关DI1",
+            "制冷低压开关DI12",
+            "电源保护DI11",
+            "制热低压开关DI11",
+            "系统热水水流开关DI10",
+            "系统热水泵控制DO22",
+            "模块热水水流开关DI9"
+        ]
+
+        for i, text in enumerate(self.texts):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.frame, text=text, variable=var)
+            self.checkbox.grid(row=i % 21, column=i // 21, sticky="w")
+            self.checkbox.bind('<Return>', lambda event: change_IO())
+            self.variables.append(var)
+        self.labels = []
+        self.entries = []
+        for i in range(27):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.entry_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, state="readonly", width=7, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=3, pady=2)
+            self.entry.bind('<Return>', lambda event: change_IO())
+            self.entries.append(self.entry)
+        self.labels[0].config(text='回水温度/℃')
+        self.labels[1].config(text='出水温度/℃')
+        self.labels[2].config(text='总出水温/℃')
+        self.labels[3].config(text='室外环温/℃')
+        self.labels[4].config(text='累耗电量Hi')
+        self.labels[5].config(text='累耗电量Lo')
+        self.label = ttk.Label(self,
+                               text="说明："
+                                    "\n温度输入需要带小数点如30.0\n累计耗电量输入数据为0x0000~0xFFFF", font=("黑体", 11))
+        self.label.place(relx=0.3, rely=0.4)
+
+
+class AlarmHistoryTab(tk.Frame):
+    def __init__(self, master, AlarmHistory_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.AlarmHistory_name = AlarmHistory_name
+        self.frame = ttk.Frame(self)
+        self.frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.labels = []
+        self.entries = []
+        for i in range(45):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.frame, text="故障记录" + str(i), justify='left')
+            self.label.grid(row=row, column=2 * col, padx=3, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.frame, state="readonly", width=10, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=1, pady=2)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='故障总数')
+        for i in range(12):
+            self.labels[33 + i].config(text='预留')
+        self.label = ttk.Label(self,
+                               text="说明："
+                                    "\n故障记录输入数据为0x0000~0xFFFF", font=("黑体", 11))
+
+
+class CycleTab(tk.Frame):
+    def __init__(self, master, cycle_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.cycle_name = cycle_name
+        self.cycleevent_frame = ttk.Labelframe(self, text="Cycle事件")
+        self.cycleevent_frame.place(relx=0, rely=0, relwidth=1, relheight=0.55)
+        self.cycleIO_frame = ttk.Labelframe(self, text="Cycle_IO")
+        self.cycleIO_frame.place(relx=0, rely=0.55, relwidth=1, relheight=0.3)
+        self.cyclesum_frame = ttk.Labelframe(self, text="Cycle累计值")
+        self.cyclesum_frame.place(relx=0, rely=0.85, relwidth=1, relheight=0.15)
+        self.canvas2 = tk.Canvas(self.cycleevent_frame)
+        self.canvas2.place(relx=0, rely=0, relwidth=0.75, relheight=1)
+        # 创建9个指示灯
+        self.lights2 = []
+        self.texts2 = []
+        for i in range(9):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+            x = 6 + col * 120  # 调整x坐标的值，使第二列灯向右移动
+            y = 6 + row * 28
+            self.light2 = self.canvas2.create_oval(x, y, x + 16, y + 16, outline="SystemButtonFace",
+                                                   fill="light grey")  # 使用 create_oval 创建圆形
+            self.lights2.append(self.light2)
+
+            # 在灯的右侧添加文本
+            text_x = x + 18  # 文本的x坐标，将文本调整到灯的右侧
+            text_y = y + 8  # 文本的y坐标，使其垂直居中
+            self.text2 = self.canvas2.create_text(text_x, text_y, text="保留", anchor=tk.W, fill="black")
+
+            self.texts2.append(self.text2)
+        self.canvas2.create_line(67, 0, 67, 400, fill="light grey")
+        self.canvas2.itemconfig(self.texts2[0], text="除霜中")
+        self.canvas2.itemconfig(self.texts2[1], text="禁升频")
+        self.canvas2.itemconfig(self.texts2[2], text="禁降频")
+        self.canvas2.itemconfig(self.texts2[3], text="强升频")
+        self.canvas2.itemconfig(self.texts2[4], text="强降频")
+        self.canvas2.itemconfig(self.texts2[5], text="请回油")
+        self.canvas2.itemconfig(self.texts2[6], text="回油中")
+        self.canvas2.itemconfig(self.texts2[7], text="可关闭")
+        self.canvas2.itemconfig(self.texts2[8], text="可开启")
+
+        # ****************************************************************
+        self.canvas = tk.Canvas(self.cycleevent_frame)
+        self.canvas.place(relx=0.095, rely=0, relwidth=0.92, relheight=1)
+        # 创建128个指示灯
+        self.lights = []
+        self.texts = []
+        for i in range(128):
+            col = i // 13  # 计算列数
+            row = i % 13  # 计算行数
+            x = 6 + col * 48  # 调整x坐标的值，使第二列灯向右移动
+            y = 4 + row * 24
+            light = self.canvas.create_oval(x, y, x + 18, y + 18, outline="SystemButtonFace",
+                                            fill="light grey")  # 使用 create_oval 创建圆形
+            self.lights.append(light)
+
+            # 在灯的右侧添加文本
+            text_x = x + 20  # 文本的x坐标，将文本调整到灯的右侧
+            text_y = y + 8  # 文本的y坐标，使其垂直居中
+            if (i < 32):
+                if 31 - i < 10:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(31 - i) + "C", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(31 - i) + "d", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(31 - i) + "E", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(31 - i) + "F", anchor=tk.W,
+                                                       fill="black")
+                else:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text=str(31 - i) + "C", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text=str(31 - i) + "d", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text=str(31 - i) + "E", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text=str(31 - i) + "F", anchor=tk.W,
+                                                       fill="black")
+
+
+            elif i < 64:
+                if 63 - i < 10:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(63 - i) + "h", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(63 - i) + "n", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(63 - i) + "r", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(63 - i) + "y", anchor=tk.W,
+                                                       fill="black")
+                else:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text=str(63 - i) + "h", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text=str(63 - i) + "n", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text=str(63 - i) + "r", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text=str(63 - i) + "y", anchor=tk.W,
+                                                       fill="black")
+
+            elif i < 96:
+                if 95 - i < 10:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(95 - i) + "G", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(95 - i) + "L", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(95 - i) + "H", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(95 - i) + "T", anchor=tk.W,
+                                                       fill="black")
+                else:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text=str(95 - i) + "G", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text=str(95 - i) + "L", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text=str(95 - i) + "H", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text=str(95 - i) + "T", anchor=tk.W,
+                                                       fill="black")
+
+            else:
+                if 127 - i < 10:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(127 - i) + "J", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(127 - i) + "S", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(127 - i) + "P", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text="0" + str(127 - i) + "U", anchor=tk.W,
+                                                       fill="black")
+                else:
+                    if int(self.cycle_name) % 4 == 1:
+                        text = self.canvas.create_text(text_x, text_y, text=str(127 - i) + "J", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 2:
+                        text = self.canvas.create_text(text_x, text_y, text=str(127 - i) + "S", anchor=tk.W,
+                                                       fill="black")
+                    elif int(self.cycle_name) % 4 == 3:
+                        text = self.canvas.create_text(text_x, text_y, text=str(127 - i) + "P", anchor=tk.W,
+                                                       fill="black")
+                    else:
+                        text = self.canvas.create_text(text_x, text_y, text=str(127 - i) + "U", anchor=tk.W,
+                                                       fill="black")
+
+                self.texts.append(text)
+        self.canvas.create_line(485, 0, 485, 430, fill="light grey")
+        self.entry_frame = ttk.Frame(self.cycleevent_frame)
+        self.entry_frame.place(relx=0.783, rely=0, relwidth=0.215, relheight=1)
+        self.labels = []
+        self.entries = []
+        for i in range(13):
+            col = i // 10  # 计算列数
+            row = i % 10  # 计算行数
+
+            self.label = ttk.Label(self.entry_frame, text="P0", justify='left')
+
+            self.label.grid(row=row, column=2 * col + 1, padx=0, pady=4, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, state="readonly", width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col, padx=0, pady=4)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='策略')
+        self.labels[1].config(text='P09')
+        self.labels[2].config(text='P0d')
+        self.labels[3].config(text='P0A')
+        self.labels[4].config(text='P06')
+        self.labels[5].config(text='P05')
+        self.labels[6].config(text='P04')
+        self.labels[7].config(text='P03_1')
+        self.labels[8].config(text='P03_2')
+        self.labels[9].config(text='P03_3')
+        self.labels[10].config(text='P02')
+        self.labels[11].config(text='P01_1')
+        self.labels[12].config(text='P01_2')
+        # ****************************************************
+        self.labels1 = []
+        self.entries1 = []
+        for i in range(30):
+            col = i // 5  # 计算列数
+            row = i % 5  # 计算行数
+
+            self.label = ttk.Label(self.cycleIO_frame, text="预留", justify='left')
+
+            self.label.grid(row=row, column=2 * col, padx=0, pady=4, sticky='w')
+            self.labels1.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.cycleIO_frame, state="readonly", width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=4)
+            self.entries1.append(self.entry)
+        self.labels1[0].config(text='风机保反馈')
+        self.labels1[1].config(text='融霜电磁阀')
+        self.labels1[2].config(text='支路电磁阀')
+        self.labels1[3].config(text='空调电磁阀')
+        self.labels1[4].config(text='回油电磁阀')
+        self.labels1[5].config(text='EVI电磁阀')
+        self.labels1[6].config(text='压机加热带')
+        self.labels1[7].config(text='四通阀')
+        self.labels1[8].config(text='IO情报2')
+        self.labels1[9].config(text='IO情报3')
+        self.labels1[10].config(text='Ps/kPa')
+        self.labels1[11].config(text='Pd/kPa')
+        self.labels1[12].config(text='Ts/℃')
+        self.labels1[13].config(text='Td/℃')
+        self.labels1[14].config(text='Tsub_in/℃')
+        self.labels1[15].config(text='Tsub_ou/℃')
+        self.labels1[16].config(text='Tcoil/℃')
+        self.labels1[17].config(text='EXV1 step')
+        self.labels1[18].config(text='EXV2 step')
+        self.labels1[19].config(text='EXV3 step')
+        self.labels1[20].config(text='电流/A')
+        self.labels1[21].config(text='C实际周波数/HZ')
+        self.labels1[22].config(text='C指令周波数/HZ')
+        self.labels1[23].config(text='F1实际周波数/rpm')
+        self.labels1[24].config(text='F1指令周波数/rpm')
+        self.labels1[25].config(text='F2实际周波数/rpm')
+        self.labels1[26].config(text='F2指令周波数/rpm')
+        self.labels1[27].config(text='F1电流/A')
+        self.labels1[28].config(text='F2电流/A')
+        self.labels1[29].config(text='压IPM温度/℃')
+        # ***********************************
+        self.labels2 = []
+        self.entries2 = []
+        for i in range(10):
+            col = i // 2  # 计算列数
+            row = i % 2  # 计算行数
+
+            self.label = ttk.Label(self.cyclesum_frame, text="预留", justify='left')
+
+            self.label.grid(row=row, column=2 * col, padx=1, pady=4, sticky='w')
+            self.labels2.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.cyclesum_frame, state="readonly", width=6, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=4)
+            self.entries2.append(self.entry)
+        self.labels2[0].config(text='累积运行时间Hi')
+        self.labels2[1].config(text='累积运行时间Lo')
+        self.labels2[2].config(text='累积消费电力Hi')
+        self.labels2[3].config(text='累积消费电力Lo')
+        self.labels2[4].config(text='ATW 组累计开机时间Hi')
+        self.labels2[5].config(text='ATW 组累计开机时间Lo')
+        self.labels2[6].config(text='压INVNo高')
+        self.labels2[7].config(text='压INVNo低')
+        self.labels2[8].config(text='风INVNo高')
+        self.labels2[9].config(text='风INVNo低')
+
+
+class CycleTab_Send(tk.Frame):
+    def __init__(self, master, cycle_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.cycle_name = cycle_name
+        self.cycleevent_frame = ttk.Labelframe(self, text="Cycle事件")
+        self.cycleevent_frame.place(relx=0, rely=0.05, relwidth=1, relheight=0.55)
+        self.cycleIO_frame = ttk.Labelframe(self, text="Cycle_IO")
+        self.cycleIO_frame.place(relx=0, rely=0.36, relwidth=1, relheight=0.45)
+        self.cyclesum_frame = ttk.Labelframe(self, text="Cycle累计值(0x0000~0xFFFF)")
+        self.cyclesum_frame.place(relx=0, rely=0.80, relwidth=1, relheight=0.2)
+        self.checkboxes = []
+        self.variables = []
+        self.texts = [
+            "除霜中",
+            "禁升频",
+            "禁降频",
+            "强升频",
+            "强降频",
+            "请回油",
+            "回油中",
+            "可关闭",
+            "可开启"
+        ]
+
+        for i, text in enumerate(self.texts):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.cycleevent_frame, text=text, variable=var)
+            self.checkbox.grid(row=i % 9, column=i // 9, sticky="w")
+            self.checkbox.bind('<Return>', lambda event: change_CycleEvent())
+            self.variables.append(var)
+        self.entry_frame = ttk.Frame(self.cycleevent_frame)
+        self.entry_frame.place(relx=0.12, rely=0, relwidth=1, relheight=1)
+        self.labels = []
+        self.entries = []
+        for i in range(17):
+            col = i // 9  # 计算列数
+            row = i % 9  # 计算行数
+
+            self.label = ttk.Label(self.entry_frame, text="P0", justify='left')
+
+            self.label.grid(row=row, column=2 * col + 1, padx=0, pady=1, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.entry_frame, width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col, padx=0, pady=0)
+            self.entry.bind('<Return>', lambda event: change_CycleEvent())
+            self.entries.append(self.entry)
+        for i in range(17):
+            if i<=12:
+                self.entries[i].insert(0,'1')
+            else:
+                self.entries[i].insert(0, '0xFFFFFFFF')
+        self.labels[0].config(text='策略(0:无1:禁↑2:禁↓3:强↑4:强↓)')
+        self.labels[1].config(text='P09(1:禁止下降2:强制上升)')
+        self.labels[2].config(text='P0d(1:禁止下降2:强制上升)')
+        self.labels[3].config(text='P0A(1:禁止下降2:强制上升)')
+        self.labels[4].config(text='P06(1:禁止下降2:强制上升)')
+        self.labels[5].config(text='P05(1:禁止下降2:强制上升)')
+        self.labels[6].config(text='P04(1:禁止下降2:强制上升)')
+        self.labels[7].config(text='P03_1(1:禁止下降2:强制上升)')
+        self.labels[8].config(text='P03_2(1:禁止下降2:强制上升)')
+        self.labels[9].config(text='P03_3(1:禁止下降2:强制上升)')
+        self.labels[10].config(text='P02(1:禁止下降2:强制上升)')
+        self.labels[11].config(text='P01_1(1:禁止下降2:强制上升)')
+        self.labels[12].config(text='P01_2(1:禁止下降2:强制上升)')
+        self.labels[13].config(text='压机故障(0x00000000~)')
+        self.labels[14].config(text='FAN1故障(0x00000000~)')
+        self.labels[15].config(text='FAN2故障(0x00000000~)')
+        self.labels[16].config(text='Cycle故障(0x00000000~)')
+
+        # ****************************************************
+        self.labels1 = []
+        self.entries1 = []
+        for i in range(30):
+            col = i // 10  # 计算列数
+            row = i % 10  # 计算行数
+
+            self.label = ttk.Label(self.cycleIO_frame, text="预留", justify='left')
+
+            self.label.grid(row=row, column=2 * col, padx=0, pady=4, sticky='w')
+            self.labels1.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.cycleIO_frame, width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=4)
+            self.entry.bind('<Return>', lambda event: change_CycleIO())
+            self.entries1.append(self.entry)
+        for i in range(30):
+            if i<=7:
+                self.entries1[i].insert(0,'1')
+            elif i==8 or i==9:
+                self.entries1[i].insert(0, '0xFFFF')
+            elif i==10 or i==11:
+                self.entries1[i].insert(0, '1400')
+            elif 11<i<=16:
+                self.entries1[i].insert(0, '30.1')
+            elif 16<i<=19:
+                self.entries1[i].insert(0, '500')
+            elif i==20:
+                self.entries1[i].insert(0, '5.88')
+            elif i==21 or i==22:
+                self.entries1[i].insert(0, '60.1')
+            elif 22<i<=26:
+                self.entries1[i].insert(0, '1000')
+            elif 26<i<=28:
+                self.entries1[i].insert(0, '3.75')
+            else:
+                self.entries1[i].insert(0, '60.1')
+        self.labels1[0].config(text='风机保反馈(1:ON 0:0FF)')
+        self.labels1[1].config(text='融霜电磁阀(1:ON 0:0FF)')
+        self.labels1[2].config(text='支路电磁阀(1:ON 0:0FF)')
+        self.labels1[3].config(text='空调电磁阀(1:ON 0:0FF)')
+        self.labels1[4].config(text='回油电磁阀(1:ON 0:0FF)')
+        self.labels1[5].config(text='EVI电磁阀(1:ON 0:0FF)')
+        self.labels1[6].config(text='压机加热带(1:ON 0:0FF)')
+        self.labels1[7].config(text='四通阀(1:ON 0:0FF)')
+        self.labels1[8].config(text='IO情报2(0x0000~0xFFFF)')
+        self.labels1[9].config(text='IO情报3(0x0000~0xFFFF)')
+        self.labels1[10].config(text='Ps/kPa')
+        self.labels1[11].config(text='Pd/kPa')
+        self.labels1[12].config(text='Ts/℃')
+        self.labels1[13].config(text='Td/℃')
+        self.labels1[14].config(text='Tsub_in/℃')
+        self.labels1[15].config(text='Tsub_ou/℃')
+        self.labels1[16].config(text='Tcoil/℃')
+        self.labels1[17].config(text='EXV1 step')
+        self.labels1[18].config(text='EXV2 step')
+        self.labels1[19].config(text='EXV3 step')
+        self.labels1[20].config(text='电流/A')
+        self.labels1[21].config(text='C实际周波数/HZ')
+        self.labels1[22].config(text='C指令周波数/HZ')
+        self.labels1[23].config(text='F1实际周波数/rpm')
+        self.labels1[24].config(text='F1指令周波数/rpm')
+        self.labels1[25].config(text='F2实际周波数/rpm')
+        self.labels1[26].config(text='F2指令周波数/rpm')
+        self.labels1[27].config(text='F1电流/A')
+        self.labels1[28].config(text='F2电流/A')
+        self.labels1[29].config(text='压IPM温度/℃')
+        # ***********************************
+        self.labels2 = []
+        self.entries2 = []
+        for i in range(8):
+            col = i // 3  # 计算列数
+            row = i % 3  # 计算行数
+
+            self.label = ttk.Label(self.cyclesum_frame, text="预留", justify='left')
+
+            self.label.grid(row=row, column=2 * col, padx=0, pady=4, sticky='w')
+            self.labels2.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.cyclesum_frame, width=8, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=4)
+            self.entry.bind('<Return>', lambda event: change_CycleSum())
+            self.entry.insert(0,'0xFF')
+            self.entries2.append(self.entry)
+        self.labels2[0].config(text='压机INVNo')
+        self.labels2[1].config(text='风机INVNo')
+        self.labels2[2].config(text='累积运行时间Hi')
+        self.labels2[3].config(text='累积运行时间Lo')
+        self.labels2[4].config(text='累积消费电力Hi')
+        self.labels2[5].config(text='累积消费电力Lo')
+        self.labels2[6].config(text='ATW累计开机Hi')
+        self.labels2[7].config(text='ATW累计开机Lo')
+
+        self.label = ttk.Label(self, text="当前选择的制冷循环为：")
+        self.label.place(relx=0, rely=0.01)
+        self.combobox = ttk.Combobox(self, values=list(range(1, 5)))
+        self.combobox.place(relx=0.25, rely=0.01, width=80)
+        self.combobox.current(0)
+
+
+frame_com = ttk.LabelFrame(root, text="串口设置:")
+label_P = ttk.Label(frame_com, text='串 口:', font=('宋体', 10))
+label_P.grid(row=0, column=0, padx=1.5)
+com_P = Combobox(frame_com)
+com_P.grid(row=0, column=1, padx=1.5)
+com_P['value'] = list(select_P)
+com_P.current(1)
+label_E = ttk.Label(frame_com, text='波特率:', font=('宋体', 10))
+label_E.grid(row=1, column=0, padx=1.5)
+com_E = Combobox(frame_com)
+com_E.grid(row=1, column=1, padx=1.5)
+com_E['value'] = list(select_E)
+com_E.current(0)
+label_D = ttk.Label(frame_com, text='数据位:', font=('宋体', 10))
+label_D.grid(row=2, column=0, padx=1.5)
+com_D = Combobox(frame_com)
+com_D.grid(row=2, column=1, padx=1.5)
+com_D['value'] = list(select_D)
+com_D.current(0)
+com_A = Combobox(frame_com)
+com_A.grid(row=3, column=1, padx=1.5)
+label_A = ttk.Label(frame_com, text='校 验:', font=('宋体', 10))
+label_A.grid(row=3, column=0, padx=1.5)
+com_A['value'] = list(select_A)
+com_A.current(0)
+com_S = Combobox(frame_com)
+com_S.grid(row=4, column=1, padx=1.5)
+label_S = ttk.Label(frame_com, text='停止位:', font=('宋体', 10))
+label_S.grid(row=4, column=0, padx=1.5)
+com_S['value'] = list(select_S)
+com_S.current(0)
+light_uart = tk.Canvas(frame_com, width=20, height=20)
+light_uart.place(relx=0.85, rely=0.816)
+my_light = light_uart.create_oval(2, 2, 18, 18, outline="SystemButtonFace")
+light_uart.itemconfig(my_light, fill="red")
+button_con_com = ttk.Button(frame_com, text="打开串口", width=10, command=lambda: On_Serial(com_P.get(), com_E.get(),
+                                                                                        com_S.get(), com_D.get(),
+                                                                                        com_A.get()))
+button_con_com.grid(row=5, column=1, padx=1.5, pady=8)
+
+frame_com.place(relx=0.0, rely=0.00, relwidth=0.21, relheight=0.18)
+
+
+def fresh_com():
+    ports_list = list(serial.tools.list_ports.comports())
+    for i in range(len(ports_list)):
+        select_P.add(str(ports_list[i]))
+    com_P['value'] = list(select_P)
+    com_P.current(1)
+    com_P1['value'] = list(select_P)
+    com_P1.current(1)
+
+button_fresh = ttk.Button(frame_com, text="刷新", width=8, command=fresh_com)
+button_fresh.grid(row=5, column=0, padx=1.5, pady=8)
+
+try:
+    # Try to open the image file
+    image = Image.open("jci1.png")
+
+    # Create a PhotoImage object from the image
+    photo = ImageTk.PhotoImage(image)
+
+    # Create a label and set the image to it
+    label = tk.Label(root, image=photo)
+    label.place(relx=0.22, rely=0.036)
+
+except FileNotFoundError:
+    # Handle the case when the image file is not found
+    pass
+
+frame_txt = ttk.LabelFrame(root, text='数据流')
+Data_txt = scrolledtext.ScrolledText(frame_txt, bg="white", fg="black", wrap="none",undo=False)
+Data_txt.place(relx=0, rely=0, relwidth=1, relheight=1)
+frame_txt.place(relx=0.0, rely=0.18, relwidth=0.4, relheight=0.82)
+Data_txt.tag_configure("bold", font=("宋体", 11))
+Data_txt.tag_configure("normal", font=("宋体", 11))
+Data_txt.tag_configure("red", foreground="#E30420")
+Data_txt.tag_configure("blue", foreground="#5239C4")
+Data_txt.tag_configure("green", foreground="#00DD00")
+Data_txt.tag_configure("purple", foreground="#690f96")
+Data_txt.tag_configure("black", foreground="#040404")
+
+# 改数值部分UI
+frame_Config = ttk.LabelFrame(root, text='配置模拟器数据')
+label = ttk.Label(frame_Config, text="选择发送的模块机号：")
+label.place(relx=0.66, rely=-0.01)
+combobox = ttk.Combobox(frame_Config, values=list(range(2, 33)))
+combobox.place(relx=0.7, rely=0.018, width=55)
+combobox.current(0)
+combobox.lift()
+label_P1 = ttk.Label(frame_Config, text='发送端口:', font=('宋体', 10))
+label_P1.place(relx=0, rely=0.013)
+com_P1 = Combobox(frame_Config)
+com_P1.place(relx=0.12, rely=0.01)
+com_P1['value'] = list(select_P)
+com_P1.current(1)
+button_con_com1 = ttk.Button(frame_Config, text="启用发送", width=10, command=lambda: On_Serial1(com_P1.get()))
+button_con_com1.place(relx=0.44, rely=0.007)
+light_uart1 = tk.Canvas(frame_Config, width=20, height=20)
+light_uart1.place(relx=0.6, rely=0.01)
+my_light1 = light_uart1.create_oval(2, 2, 18, 18, outline="SystemButtonFace")
+light_uart1.itemconfig(my_light1, fill="red")
+tabs = ttk.Notebook(frame_Config)
+Init_tab = InitTab(tabs, '1')
+Event_Tab = EventTab_Send(tabs, '1')
+IO_Tab = IOTab_Send(tabs, '1')
+AlarmHistory_Tab = AlarmHistoryTab(tabs, '1')
+Cycle_Tab = CycleTab_Send(tabs, '1')
+tabs.add(Init_tab, text='模块机初期值')
+tabs.add(Event_Tab, text='模块机事件')
+tabs.add(IO_Tab, text='模块机IO')
+tabs.add(AlarmHistory_Tab, text='模块机故障历史')
+tabs.add(Cycle_Tab, text='Cycle数据')
+tabs.place(relx=0, rely=0.05, relwidth=1, relheight=1)
+for i in range(49):
+    col = i // 15  # 计算列数
+    row = i % 15  # 计算行数
+
+    # 创建可编辑的 Label
+
+    Init_tab.labels[i].grid(row=row, column=2 * col, padx=1, pady=6, sticky='w')
+
+    Init_tab.entries[i].grid(row=row, column=2 * col + 1, padx=0, pady=6)
+    Init_tab.entries[i].bind('<Return>', lambda event: change_Init())
+    Init_tab.entries[i].config(state='normal', width=9)
+for i in range(11):
+    Init_tab.entries[i + 38].config(state='readonly', width=9)
+for i in range(10):
+    Init_tab.entries[i].insert(0,'1')
+for i in range(28):
+    Init_tab.entries[i+10].insert(0,'0xFF')
+Event_Tab.entry_frame.place(relx=0.35, rely=0, relwidth=1, relheight=1)
+IO_Tab.entry_frame.place(relx=0.3, rely=0, relwidth=1, relheight=1)
+Init_tab.label.place(relx=0, rely=0.7)
+for i in range(10):
+    Event_Tab.entries[i].config(state='normal')
+for i in range(10):
+    if i==4:
+        Event_Tab.entries[i].insert(0,'1')
+    elif i==9:
+        Event_Tab.entries[i].insert(0, '0xF1F1F1F1')
+    elif i==6 or i==7 or i==8:
+        Event_Tab.entries[i].insert(0, '30.1')
+    else:
+        Event_Tab.entries[i].insert(0, '2')
+
+Event_Tab.labels[9].config(text='故障')
+for i in range(6):
+    IO_Tab.entries[i].config(state='normal')
+    if i==4 or i==5:
+        IO_Tab.entries[i].insert(0,'0xFFFF')
+    else:
+        IO_Tab.entries[i].insert(0, '20.1')
+for i in range(45):
+    col = i // 18  # 计算列数
+    row = i % 18  # 计算行数
+
+    # 创建可编辑的 Label
+
+    AlarmHistory_Tab.labels[i].grid(row=row, column=2 * col, padx=1, pady=6, sticky='w')
+
+    AlarmHistory_Tab.entries[i].grid(row=row, column=2 * col + 1, padx=0, pady=6)
+    AlarmHistory_Tab.entries[i].bind('<Return>', lambda event: change_AlarmHistory())
+    if i < 33:
+        AlarmHistory_Tab.entries[i].config(state='normal')
+AlarmHistory_Tab.entries[0].insert(0,'3')
+AlarmHistory_Tab.entries[1].insert(0,'0x1241')
+AlarmHistory_Tab.entries[2].insert(0,'0x1143')
+AlarmHistory_Tab.entries[3].insert(0,'0x0745')
+AlarmHistory_Tab.label.place(relx=0.0, rely=0.82)
+
+
+def clear_text():
+    Data_txt.delete('1.0', tk.END)
+
+
+def switch_frame():
+    if frame_txt.winfo_ismapped():
+        frame_txt.place_forget()
+        frame_Config.place(relx=0.0, rely=0.18, relwidth=0.445, relheight=0.82)
+        button_change.config(text='显示数据流')
+    else:
+        frame_Config.place_forget()
+        frame_txt.place(relx=0.0, rely=0.18, relwidth=0.4, relheight=0.82)
+        button_change.config(text='配置模拟器')
+
+
+clear_button = ttk.Button(root, text="清空数据流", width=10, command=clear_text)
+clear_button.place(relx=0.31, rely=0.16)
+clear_button.lift()
+button_change = ttk.Button(root, text='配置模拟器', command=switch_frame, width=9)
+button_change.place(relx=0.23, rely=0.16)
+button_change.lift()
+
+
+def On_Serial(port, bps, stopbits, bytesize, parity1):
+    global ser_a, T
+    if ser_a is None:
+        parity = None
+        if parity1 == 'PARITY_ODD':
+            parity = serial.PARITY_ODD
+        elif parity1 == 'PARITY_EVEN':
+            parity = serial.PARITY_EVEN
+
+        stopbits = float(stopbits)  # 将stopbits参数从字符串转换为浮点数或整数
+
+        bytesize = int(bytesize)
+
+        ser_a = serial.Serial(port[0] + port[1] + port[2] + port[3] + port[4], bps, stopbits=stopbits,
+                              bytesize=bytesize, timeout=0, parity=parity)
+
+        light_uart.itemconfig(my_light, fill="yellow")
+        button_con_com.configure(text="关闭串口")
+        start()
+        toggle_serial_components('disabled')
+    elif ser_a.isOpen():
+        flag.clear()
+        button_con_com.configure(text="打开串口")
+        light_uart.itemconfig(my_light, fill="red")
+        ser_a.close()
+        ser_a = None
+        toggle_serial_components('normal')
+        if T.is_alive():
+            flag.set()
+            T.join()
+
+def toggle_serial_components(state):
+    com_P['state'] = state
+    com_E['state'] = state
+    com_D['state'] = state
+    com_A['state'] = state
+    com_S['state'] = state
+    button_fresh['state'] = state
+def toggle_serial_components1(state):
+    com_P1['state'] = state
+def On_Serial1(port):  # 打开串口
+    global ser_b, T3
+    if ser_b == None:
+        ser_b = serial.Serial(port[0] + port[1] + port[2] + port[3] + port[4], 9600, stopbits=1, bytesize=8,
+                              timeout=0, parity=PARITY_ODD)
+        light_uart1.itemconfig(my_light1, fill="green")
+        button_con_com1.configure(text="停用发送")
+        start1()
+        toggle_serial_components1('disabled')
+
+
+    elif ser_b.isOpen():
+
+        flag3.clear()
+        button_con_com1.configure(text="启用发送")
+        light_uart1.itemconfig(my_light1, fill="red")
+        ser_b.close()
+        ser_b = None
+        toggle_serial_components1('normal')
+        if T3.is_alive():
+            flag3.set()  # 设置标志位，通知线程退出循环
+            T3.join()
+
+
+def start():
+    global T
+    if ser_a is not None and ser_a.isOpen():
+        flag.set()
+        light_uart.itemconfig(my_light, fill="green")
+        T = threading.Thread(target=processing_data)
+        T.setDaemon(True)
+        T.start()
+
+
+def start1():
+    global T3
+    if ser_b is not None and ser_b.isOpen():
+        flag3.set()
+        light_uart1.itemconfig(my_light1, fill="green")
+        T3 = threading.Thread(target=processing_data1)
+        T3.setDaemon(True)
+        T3.start()
+
+
+def processing_data():  # 数据流收发处理
+    data_temp = []
+    data = []
+    start_fresh()
+    while ser_a != None:
+        time.sleep(0.1)
+        if ser_a != None:
+            data_temp += ser_a.read_all()
+            # if (data_temp != []):
+            #     print(data_temp)
+            if len(data_temp) > 0 and data_temp[0] != 0x22:
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 1 and data_temp[0] == 0x22 and data_temp[1] != 0x06 and data_temp[1] != 0x00:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and data_temp[2] > 32 and \
+                    data_temp[2] != 34:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and data_temp[2] == 0:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and data_temp[2] > 32 and \
+                    data_temp[2] == 34:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and 0 < data_temp[2] < 33:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x00 and data_temp[2] == 0x00:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x00 and len(data_temp) > (
+                    data_temp[2] - 1):
+                for i in range(data_temp[2]):
+                    data.append(data_temp[i])
+                for i in range(data_temp[2]):
+                    data_temp.remove(data_temp[0])
+
+                if xor(data[1:len(data) - 1]) == data[len(data) - 1]:
+                    if len(data) > 9 and data[6] == 0xff:
+                        if data[8] == 0x21:
+
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(BroadCast):",
+                                            "bold blue")
+                            for i in range(len(data)):
+                                data_print = hex(data[i])
+                                data_print = data_print.replace('0x', '')
+                                if len(data_print) == 1:
+                                    Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                else:
+                                    Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                            Data_txt.insert(END, '\n')
+                            data = []
+                        else:
+                            print("出现了广播的数据，目标值为：" + str(hex(data[8])))
+
+
+                    elif len(data) > 9 and data[7] in [0xA7]:
+                        if data[8] == 0x21:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Init_Req):",
+                                            "bold blue")
+                        elif data[8] == 0x22:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Event_Req):",
+                                            "bold blue")
+                        elif data[8] == 0x25:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(IO_Req):",
+                                            "bold blue")
+                        elif data[8] in CycleEvent:
+                            for i in range(len(CycleEvent)):
+                                if data[8] == CycleEvent[i]:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                                        i + 1) + "Event_Req):",
+                                                    "bold blue")
+                        elif data[8] in CycleIO:
+                            for i in range(len(CycleIO)):
+                                if data[8] == CycleIO[i]:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                                        i + 1) + "IO_Req):",
+                                                    "bold blue")
+                        elif data[8] in InitSum:
+                            for i in range(len(InitSum)):
+                                if data[8] == InitSum[i]:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                                        i + 1) + "InitSum_Req):",
+                                                    "bold blue")
+                        elif data[8] == 0x27:
+                            Data_txt.insert(END,
+                                            str(datetime.datetime.now().strftime("%H:%M:%S")) + "(AlarmHistory_Req):",
+                                            "bold blue")
+                        for i in range(len(data)):
+                            data_print = hex(data[i])
+                            data_print = data_print.replace('0x', '')
+                            if len(data_print) == 1:
+                                Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                            else:
+                                Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                        Data_txt.insert(END, '\n')
+                        data = []
+
+                    elif len(data) > 9 and data[7] in [0xA8]:
+                        if data[8] == 0x21:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Init):",
+                                            "bold red")
+                            data_Init[data[4] - 1] = data
+                        elif data[8] == 0x22:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Event):",
+                                            "bold red")
+                            data_Event[data[4] - 1] = data
+                        elif data[8] == 0x25:
+                            Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(IO):",
+                                            "bold red")
+                            data_IO[data[4] - 1] = data
+                        elif data[8] in CycleEvent:
+                            for i in range(len(CycleEvent)):
+                                if data[8] == CycleEvent[i]:
+                                    data_CycleEvent[i][data[4] - 1] = data
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                                        i + 1) + "Event):",
+                                                    "bold red")
+                        elif data[8] in CycleIO:
+                            for i in range(len(CycleIO)):
+                                if data[8] == CycleIO[i]:
+                                    if data[9] == 0x00:
+                                        data_CycleIO1[i][data[4] - 1] = data
+                                        Data_txt.insert(END, str(
+                                            datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                            i + 1) + "IO1):",
+                                                        "bold red")
+                                    else:
+                                        data_CycleIO2[i][data[4] - 1] = data
+                                        Data_txt.insert(END, str(
+                                            datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                            i + 1) + "IO2):",
+                                                        "bold red")
+                        elif data[8] in InitSum:
+                            for i in range(len(InitSum)):
+                                if data[8] == InitSum[i]:
+                                    data_CycleSum[i][data[4] - 1] = data
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Cycle" + str(
+                                                        i + 1) + "InitSum):",
+                                                    "bold red")
+                        elif data[8] == 0x27:
+                            if data[9] == 0x00:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S")) + "(AlarmHistory1):",
+                                                "bold red")
+                                data_AlarmHistory1[data[4] - 1] = data
+                            else:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S")) + "(AlarmHistory2):",
+                                                "bold red")
+                                data_AlarmHistory2[data[4] - 1] = data
+                        for i in range(len(data)):
+                            data_print = hex(data[i])
+                            data_print = data_print.replace('0x', '')
+                            if len(data_print) == 1:
+                                Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                            else:
+                                Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                        Data_txt.insert(END, '\n')
+                        data = []
+
+                    elif len(data) > 8 and data[7] in [0xA1]:
+
+                        Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(ACK):",
+                                        "bold purple")
+                        for i in range(len(data)):
+                            data_print = hex(data[i])
+                            data_print = data_print.replace('0x', '')
+                            if len(data_print) == 1:
+                                Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                            else:
+                                Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                        Data_txt.insert(END, '\n')
+                        data = []
+
+                    elif len(data) > 9 and data[7] in [0xA3]:
+
+                        Data_txt.insert(END, str(datetime.datetime.now().strftime("%H:%M:%S")) + "(Inform):",
+                                        "bold green")
+                        for i in range(len(data)):
+                            data_print = hex(data[i])
+                            data_print = data_print.replace('0x', '')
+                            if len(data_print) == 1:
+                                Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                            else:
+                                Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                        Data_txt.insert(END, '\n')
+                        data = []
+                else:
+                    data = []
+
+
+def processing_data1():  # 数据流收发处理
+    if not ser_b.isOpen():
+        ser_b.open()
+    data_temp = []
+    data = []
+    ser_b.flushInput()
+    while ser_b != None:
+        data_temp += ser_b.read()
+        time.sleep(0.1)
+        # if data_temp!=[]:
+        #     print(data_temp)
+        if len(data_temp) > 0 and data_temp[0] != 0x22:
+            data_temp.remove(data_temp[0])
+        elif len(data_temp) > 1 and data_temp[0] == 0x22 and data_temp[1] != 0x06 and data_temp[1] != 0x00:
+            data_temp.remove(data_temp[0])
+            data_temp.remove(data_temp[0])
+        elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and data_temp[2] > 32:
+            data_temp.remove(data_temp[0])
+            data_temp.remove(data_temp[0])
+            data_temp.remove(data_temp[0])
+        elif len(data_temp) > 2 and data_temp[0] == 0x22 and data_temp[1] == 0x06 and 0 < data_temp[2] < 33:
+            for i in range(3):
+                data.append(data_temp[i])
+            for i in range(3):
+                data_temp.remove(data_temp[0])
+            msg.showinfo("Successfully!", str(data[2] + 1) + "号机完成更新")
+            for i in range(len(data)):
+                print(hex(data[i]), end=' ')
+            print("\n")
+            data.clear()
+
+        if len(data_send) > 0:
+            try:
+
+                data_send[0].append(xor(data_send[0][1:]))
+                ser_b.write(data_send[0])
+                print("发送了:", end='')
+                for i in range(len(data_send[0])):
+                    print(hex(data_send[0][i]), end=' ')
+                print("\n")
+                del (data_send[0])
+            except Exception:
+                del data_send[0]
+
+
+def fresh():
+    while True:
+        Data_txt.see(tk.END)
+        time.sleep(5)
+
+
+def xor(data):  # BCC校验
+    checksum = 0
+    for el in data:
+        checksum ^= el
+    return checksum
+
+
+def start_fresh():
+    global T1, flag1
+    flag1.set()
+    T1 = threading.Thread(target=fresh)
+    T1.setDaemon(True)
+    T1.start()
+
+
+def change_Init():
+    temp = ''
+    module_id = combobox.get()
+    data = [0x22, 0x00, 0x30, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, 0x21, 0x03, 0x12]
+    for i in range(7):
+        if i == 2:
+            value = Init_tab.entries[i].get()
+            if value and value.isdigit():
+                value = int(value)
+                if value < 4:
+                    binary_str = bin(value)[2:]
+                    binary_str = binary_str.zfill(2)
+                    temp = temp + binary_str
+                else:
+                    temp = temp + "00"
+            else:
+                temp = temp + "00"
+        else:
+            value = Init_tab.entries[i].get()
+            if value and value.isdigit():
+                value = int(value)
+                if value < 2:
+                    temp = temp + str(value)
+                else:
+                    temp = temp + "0"
+            else:
+                temp = temp + "0"
+    data.append(int(temp, 2))
+    temp = ''
+    for i in range(2):
+        if i == 0:
+            value = Init_tab.entries[i + 7].get()
+            if value and value.isdigit():
+                value = int(value)
+                if value < 8:
+                    binary_str = bin(value)[2:]
+                    binary_str = binary_str.zfill(3)
+                    temp = temp + binary_str
+                else:
+                    temp = temp + "000"
+            else:
+                temp = temp + "000"
+        else:
+            value = Init_tab.entries[i + 7].get()
+            if value and value.isdigit():
+                value = int(value)
+                if value < 32:
+                    binary_str = bin(value)[2:]
+                    binary_str = binary_str.zfill(5)
+                    temp = temp + binary_str
+                else:
+                    temp = temp + "00000"
+            else:
+                temp = temp + "00000"
+    data.append(int(temp, 2))
+    temp = '00'
+    value = Init_tab.entries[9].get()
+    if value and value.isdigit():
+        value = int(value)
+        if value < 4:
+            binary_str = bin(value)[2:]
+            binary_str = binary_str.zfill(2)
+            temp = temp + binary_str
+        else:
+            temp = temp + "00"
+    else:
+        temp = temp + "00"
+    temp = temp + "0000"
+    data.append(int(temp, 2))
+    data.append(0)
+    for i in range(32):
+        value = Init_tab.entries[10 + i].get()
+        if '0x' in value and len(value) < 5:
+            data.append(int(value, 16))
+        else:
+            data.append(0)
+
+    data_send.append(data)
+
+
+def change_AlarmHistory():
+    temp = ''
+    module_id = combobox.get()
+    data = [0x22, 0x00, 0x54, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, 0x27, 0x00, 0x24, 0]
+    value = AlarmHistory_Tab.entries[0].get()
+    if value and value.isdigit():
+        value = int(value)
+        if 0<=value < 33:
+            data.append(value)
+            for i in range(32):
+                temp = AlarmHistory_Tab.entries[1 + i].get()
+                if '0x' in temp and len(temp) < 7:
+                    integer_value = int(temp, 16)
+
+                    # 分解整数为两个字节
+                    byte1 = (integer_value >> 8) & 0xFF
+                    byte2 = integer_value & 0xFF
+                    data.append(byte1)
+                    data.append(byte2)
+                else:
+                    data.append(0)
+                    data.append(0)
+        else:
+            data.append(0)
+            for i in range(32):
+                data.append(0)
+                data.append(0)
+
+    else:
+        data.append(0)
+        for i in range(32):
+            data.append(0)
+            data.append(0)
+    data_send.append(data)
+
+
+def change_Event():
+    module_id = combobox.get()
+    data = [0x22, 0x00, 0x22, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, 0x22, 0x00, 0x0B]
+    checkbox_values = []
+    for var in Event_Tab.variables:
+        value = var.get()
+        checkbox_values.append(value)
+    temp = "0" + str(checkbox_values[0]) + "0"
+    for i in range(5):
+        temp = temp + str(checkbox_values[i + 1])
+    data.append(int(temp, 2))
+    temp = ''
+    for i in range(8):
+        temp = temp + str(checkbox_values[i + 6])
+    data.append(int(temp, 2))
+    temp = '000'
+    for i in range(5):
+        temp = temp + str(checkbox_values[i + 14])
+    data.append(int(temp, 2))
+    data.append(0)
+    value = Event_Tab.entries[9].get()
+    if "0x" in value:
+        value1 = value[:6]
+        value2 = "0x" + value[6:]
+        high, low = convert_to_hex(value1)
+        data.append(high)
+        data.append(low)
+        high, low = convert_to_hex(value2)
+        data.append(high)
+        data.append(low)
+    else:
+        for j in range(4):
+            data.append(0)
+
+
+    value_high = Event_Tab.entries[0].get()
+    value_low = Event_Tab.entries[1].get()
+    if value_high.isdigit() and value_low.isdigit():  # 检查输入的是否为数字
+        value = int(value_high) * 16 + int(value_low)
+        data.append(value)
+    elif value_high.isdigit() and not value_low.isdigit():  # 检查输入的是否为数字
+        value = int(value_high) * 16
+        data.append(value)
+    elif not value_high.isdigit() and value_low.isdigit():  # 检查输入的是否为数字
+        value = int(value_low)
+        data.append(value)
+    else:
+        data.append(0)
+    value_high = Event_Tab.entries[2].get()
+    if value_high.isdigit():
+        value = int(value_high) * 16
+        data.append(value)
+    else:
+        data.append(0)
+    for i in range(6):
+        high, low = convert_to_hex(Event_Tab.entries[3 + i].get())
+        data.append(high)
+        data.append(low)
+    data_send.append(data)
+
+
+def change_IO():
+    module_id = combobox.get()
+    data = [0x22, 0x00, 0x2C, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, 0x25, 0x00, 0x10]
+    checkbox_values = []
+    for var in IO_Tab.variables:
+        value = var.get()
+        checkbox_values.append(value)
+    temp = ""
+    for i in range(8):
+        temp = temp + str(checkbox_values[i])
+    data.append(int(temp, 2))
+    temp = '0'
+    for i in range(7):
+        temp = temp + str(checkbox_values[i + 8])
+    data.append(int(temp, 2))
+    temp = '0'
+    for i in range(3):
+        temp = temp + str(checkbox_values[i + 15])
+    temp = temp + '0'
+    for i in range(3):
+        temp = temp + str(checkbox_values[i + 18])
+    data.append(int(temp, 2))
+    for i in range(3):
+        data.append(0)
+    for i in range(3):
+        high, low = convert_to_hex(IO_Tab.entries[i].get())
+        data.append(high)
+        data.append(low)
+    for i in range(2):
+        data.append(0)
+    high, low = convert_to_hex(IO_Tab.entries[3].get())
+    data.append(high)
+    data.append(low)
+    for i in range(12):
+        data.append(0)
+
+    for i in range(2):
+        high, low = convert_to_hex(IO_Tab.entries[4 + i].get())
+        data.append(high)
+        data.append(low)
+    data_send.append(data)
+
+
+def change_CycleEvent():
+    module_id = combobox.get()
+    cycle_id = Cycle_Tab.combobox.get()
+    data = [0x22, 0x00, 0x30, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, CycleEvent[int(cycle_id) - 1], 0x00, 0x12]
+    checkbox_values = []
+    for var in Cycle_Tab.variables:
+        value = var.get()
+        checkbox_values.append(value)
+    temp = ""
+    for i in range(5):
+        temp = temp + str(checkbox_values[i])
+    temp = temp + "0"
+    for i in range(2):
+        temp = temp + str(checkbox_values[i + 5])
+    data.append(int(temp, 2))
+    temp = '000000'
+    for i in range(2):
+        temp = temp + str(checkbox_values[i + 7])
+    data.append(int(temp, 2))
+    for i in range(4):
+        data.append(0)
+
+
+    for i in range(4):
+        value=Cycle_Tab.entries[i+13].get()
+        if "0x" in value:
+            value1=value[:6]
+            value2="0x"+value[6:]
+            high,low=convert_to_hex(value1)
+            data.append(high)
+            data.append(low)
+            high, low = convert_to_hex(value2)
+            data.append(high)
+            data.append(low)
+        else:
+            for j in range(4):
+                data.append(0)
+    value = Cycle_Tab.entries[0].get()
+    if value.isdigit():
+        data.append(int(value)*16)
+    for i in range(3):
+        temp=''
+        for j in range(4):
+            value = Cycle_Tab.entries[i*4+j+1].get()
+            if value.isdigit():
+                value_int = int(value)  # 将字符串类型的数字转换为整数类型
+                binary_str = bin(value_int)[2:].zfill(2)
+                temp=temp+binary_str
+            else:
+                temp = temp + "00"
+        data.append(int(temp,2))
+    data_send.append(data)
+
+
+def change_CycleIO():
+    module_id = combobox.get()
+    cycle_id = Cycle_Tab.combobox.get()
+    data = [0x22, 0x00, 0x54, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, CycleIO[int(cycle_id) - 1], 0x00, 0x24]
+    temp=''
+    for i in range(8):
+        value=Cycle_Tab.entries1[i].get()
+        if value.isdigit():
+            temp=temp+Cycle_Tab.entries1[i].get()
+        else:
+            temp = temp + "0"
+    data.append(int(temp,2))
+    data.append(0)
+
+    for i in range(22):
+        if i==12 or i==19 or i==20:
+            high, low = convert_to_hex1(Cycle_Tab.entries1[8 + i].get())
+            data.append(high)
+            data.append(low)
+        else:
+            high, low = convert_to_hex(Cycle_Tab.entries1[8 + i].get())
+            data.append(high)
+            data.append(low)
+    data_send.append(data)
+
+
+def change_CycleSum():
+    module_id = combobox.get()
+    cycle_id = Cycle_Tab.combobox.get()
+    data = [0x22, 0x00, 0x20, 0x00, int(module_id) - 1, 0x00, 0x00, 0xA8, InitSum[int(cycle_id) - 1], 0x00, 0x0A]
+
+
+    for i in range(8):
+        high, low = convert_to_hex(Cycle_Tab.entries2[i].get())
+        data.append(high)
+        data.append(low)
+    for i in range(4):
+        data.append(0)
+    data_send.append(data)
+
+
+def xor(data):  # BCC校验
+    checksum = 0
+    for el in data:
+        checksum ^= el
+    return checksum
+
+
+def convert_to_hex(text):
+    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+        num = int(text)
+        if num < 0:
+            num += 65536
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '.' in text:
+        num = float(text)
+
+        if num < 0:
+            num = int(num * 10)
+            num += 65536
+        else:
+            num = int(num * 10)
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '0x' in text:
+        num = int(text, 16)
+        hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+        high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+        low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+        return high, low
+    else:
+        high = 0
+        low = 0
+        return high, low
+
+def convert_to_hex1(text):
+    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+        num = int(text)
+        if num < 0:
+            num += 65536
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '.' in text:
+        num = float(text)
+
+        if num < 0:
+            num = int(num * 100)
+            num += 65536
+        else:
+            num = int(num * 100)
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '0x' in text:
+        num = int(text, 16)
+        hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+        high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+        low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+        return high, low
+    else:
+        high = 0
+        low = 0
+        return high, low
+module_frame = ttk.Frame(root)
+module_frame.place(relx=0.4, rely=0, relwidth=0.6, relheight=1)
+
+# 创建ModuleStateTab
+module_state_tab = ModuleStateTab(module_frame, "1")
+module_state_tab.pack(fill='both', expand=True)
+
+# 调用ModuleStateTab的start方法
+module_state_tab.start()
+
+root.mainloop()

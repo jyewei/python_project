@@ -1,0 +1,1689 @@
+import time
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox as msg
+import threading
+
+import os
+import ctypes
+
+RS_DEVMODE_I2C = 0x04  # I2C (DeviceMode of _RS_HARDWARE_INFO)
+RS_DEVMODE_MASTER = 0x00  # Master (MasterSlaveAct of _RS_HARDWARE_INFO)
+RS_PWRCTRL_OFF = 0x00  # Power control off
+RS_PWRCTRL_ON = 0x01  # Power control on
+RS_OUTPUT_3_3V = 0x02  # Output voltage is 3.3V
+RS_OUTPUT_5_0V = 0x04  # Output voltage is 5.0V
+RS_I2C_PULLUP_DISABLE = 0x00  # Disable pull-up for SCL, SDA pin
+RS_I2C_PULLUP_ENABLE = 0x01  # Enable pull-up for SCL, SDA pin
+RS_I2C_FREQ_1MHZ = 1000  # frequency for I2C bus to 1MHz
+RS_I2C_FREQ_400KHZ = 400  # frequency for I2C bus to 400KHz
+RS_I2C_FREQ_100KHZ = 100  # frequency for I2C bus to 100KHz
+# Value for I2C transfer
+RS_I2C_FLAG_NONE = 0x00  # None
+RS_I2C_FLAG_10BITADDR = 0x01  # address for 10 bit device
+RS_I2C_FLAG_STOP = 0x02  # when issue stop condition
+# Value for transfer sub-address (value for usb61_i2c_read_master_ex)
+RS_I2C_FLAG_1BYTE_SA = 0x04  # Send 1 byte sub-address before read
+RS_I2C_FLAG_2BYTE_SA = 0x0C  # Send 2 bytes sub-address before read
+RS_INTERVAL_NONE = 0x00
+RS_INTERVAL_ONE = 0x01
+I2C_DEVICE_ADDRESS = 0x50
+usb61api = ctypes.WinDLL('usb61api.dll')
+
+data_AlarmHistory = [[] for _ in range(32)]
+data_WRCunit = [[] for _ in range(32)]
+data_WRCsysconfig = [[]]
+data_fix = [[]]
+data_chillerlink = [[]]
+data_long = [[]]
+data_bootloader = [[]]
+T = None
+flag = threading.Event()
+
+T1 = None
+flag1 = threading.Event()
+root = tk.Tk()
+root.title("EEPROM_ByteGenius  Ver:1.1")
+root.geometry("800x550")
+root.resizable(False, False)
+
+icon_path = "logo.ico"
+style = ttk.Style()
+# 创建一个样式，命名为Bold.TButton
+style.configure("Red.TCheckbutton", foreground="red")
+style.configure("Black.TCheckbutton", foreground="black")
+style.configure("Custom.Horizontal.TProgressbar",
+                padding=-2)
+style.configure("Custom.TEntry", padding=0)
+style.configure("Custom1.TEntry", padding=-1)
+if os.path.exists(icon_path):
+    root.iconbitmap(icon_path)
+
+
+class WRCStateTab(tk.Frame):
+    def __init__(self, master, wrcstate_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.wrcstate_name = wrcstate_name
+        self.T = None
+        self.flag = threading.Event()
+
+        # self.label = ttk.Label(root, text="选择显示的模块机号：")
+        self.sys_frame = ttk.Labelframe(self, text="系统数据")
+        self.sys_frame.place(relx=0, rely=0, relwidth=1, relheight=0.39)
+
+        self.config1_frame = ttk.Frame(self.sys_frame)
+        self.checkboxes = []
+        self.variables = []
+        self.texts = ["静音有效", "快速热水", "自动运行", "机组时间启用", "自动化霜", "辅电加热", "关机水泵运转", "停机水泵运转", "混拼许可", "外机防雪",
+                      "水泵循环", "制热", "制冷", "运行"]
+        for i, text in enumerate(self.texts):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.config1_frame, text=text, variable=var)
+            self.checkbox.grid(row=i % 5, column=i // 5, sticky="w")
+            self.checkbox.bind('<Button-1>', lambda event, index=i: self.checkbox_change_event(index))
+            self.variables.append(var)
+            self.checkboxes.append(self.checkbox)
+        self.config1_frame.place(relx=0, rely=-0.02, relwidth=0.326, relheight=0.7)
+        self.config11_frame = ttk.Frame(self.sys_frame)
+        self.heating_control_label = ttk.Label(self.config11_frame, text="制热控制选择")
+        self.heating_control_label.grid(row=3, column=1, pady=(2, 0))
+
+        self.heating_control_combobox = ttk.Combobox(self.config11_frame,
+                                                     values=["0-系统回水", "1-系统出水", "2-变出水控制", "3-变回水控制"],
+                                                     width=10)
+        self.heating_control_combobox.current(0)
+        self.heating_control_combobox.grid(row=4, column=1, padx=(10, 0))
+
+        # 创建制冷控制选择下拉框
+        self.cooling_control_label = ttk.Label(self.config11_frame, text="制冷控制选择")
+        self.cooling_control_label.grid(row=3, column=2, pady=(2, 0))
+
+        self.cooling_control_combobox = ttk.Combobox(self.config11_frame,
+                                                     values=["0-系统回水", "1-系统出水", "2-变出水控制", "3-变回水控制"],
+                                                     width=10)
+        self.cooling_control_combobox.current(0)
+        self.cooling_control_combobox.grid(row=4, column=2, padx=(18, 0))
+        # 绑定下拉框的事件
+        self.heating_control_combobox.bind("<<ComboboxSelected>>", self.change_combobox_color)
+        self.cooling_control_combobox.bind("<<ComboboxSelected>>", self.change_combobox_color)
+        self.config11_frame.place(relx=0, rely=0.62, relwidth=0.326, relheight=0.32)
+
+        self.sys_entry_frame = ttk.Frame(self.sys_frame)
+        self.notebook = ttk.Notebook(self.sys_entry_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # 创建第一页
+        self.page1 = ttk.Frame(self.notebook)
+        self.notebook.add(self.page1, text="Page 1")
+        self.labels = []
+        self.entries = []
+        for i in range(19):
+            col = i // 7  # 计算列数
+            row = i % 7  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.page1, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=0, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.page1, width=5, style='Custom.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=1, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries.append(self.entry)
+        # 创建第二页
+        self.page2 = ttk.Frame(self.notebook)
+        self.notebook.add(self.page2, text="Page 2")
+        for i in range(19):
+            col = i // 7  # 计算列数
+            row = i % 7  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.page2, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=0, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.page2, width=5, style="Custom.TEntry")
+            self.entry.grid(row=row, column=2 * col + 1, padx=1, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries.append(self.entry)
+        self.sys_entry_frame.place(relx=0.328, rely=-0.13, relwidth=0.674, relheight=1.13)
+        self.labels[0].config(text='组内模块数')
+        self.labels[1].config(text='BAS modbus 地址')
+        self.labels[2].config(text='温控周期/s')
+        self.labels[3].config(text='空调动作回差/℃')
+        self.labels[4].config(text='开辅助电加热水温回差/℃')
+        self.labels[5].config(text='关辅助电加热水温回差/℃')
+        self.labels[6].config(text='开辅助电加热环温/℃')
+        self.labels[7].config(text='热水开电加热环温/℃')
+        self.labels[8].config(text='出水温度过低报警准位/℃')
+        self.labels[9].config(text='出水温度过低报警(乙醇)/℃')
+        self.labels[10].config(text='出水温度过高报警准位/℃')
+        self.labels[11].config(text='冷热模式选择')
+        self.labels[12].config(text='开关机选择')
+        self.labels[13].config(text='智能温控器数量')
+        self.labels[14].config(text='制冷进水目标温度/℃')
+        self.labels[15].config(text='制冷出水目标温度/℃')
+        self.labels[16].config(text='制热进水目标温度/℃')
+        self.labels[17].config(text='制热出水目标温度/℃')
+        self.labels[18].config(text='制冷水温设定值A/℃')
+        self.labels[19].config(text='制冷水温设定值B/℃')
+        self.labels[20].config(text='制冷水温设定值C/℃')
+        self.labels[21].config(text='制冷水温设定值D/℃')
+        self.labels[22].config(text='保留')
+        self.labels[23].config(text='制热水温设定值A/℃')
+        self.labels[24].config(text='制热水温设定值B/℃')
+        self.labels[25].config(text='制热水温设定值C/℃')
+        self.labels[26].config(text='制热水温设定值D/℃')
+        self.labels[27].config(text='制热水温设定值F/℃')
+        self.labels[28].config(text='水阀动作时间/s')
+        self.labels[29].config(text='水流开关报警延时/s')
+        self.labels[30].config(text='总出水传感器补偿设定/℃')
+        self.labels[31].config(text='制冷、制热设定水温/℃')
+        self.labels[32].config(text='机组运转时间设置/s')
+        self.labels[33].config(text='关机后水泵运转时间/s')
+        self.labels[34].config(text='模块单元启动百分数/%')
+        self.labels[35].config(text='热水动作温差/℃')
+        self.labels[36].config(text='回水变化率控制选择')
+        self.labels[37].config(text='CRC')
+        self.entries[37].config(state='readonly')
+        self.unit_frame = ttk.Labelframe(self, text="单元数据")
+        self.labels2 = []
+        self.entries2 = []
+        for i in range(33):
+            col = i // 11  # 计算列数
+            row = i % 11  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.unit_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=0, pady=2, sticky='w')
+            self.labels2.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.unit_frame, width=6)
+            self.entry.grid(row=row, column=2 * col + 1, padx=1, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries2.append(self.entry)
+        self.labels2[0].config(text='除霜间隔累计制热时间/min')
+        self.labels2[1].config(text='除霜类型')
+        self.labels2[2].config(text='除霜最长时间/s')
+        self.labels2[3].config(text='除霜结束翅片温度准位/℃')
+        self.labels2[4].config(text='环温小于0度除霜温度准位/℃')
+        self.labels2[5].config(text='环温不小于0度除霜温度/℃')
+        self.labels2[6].config(text='EXV1/EXV2制冷初始步数')
+        self.labels2[7].config(text='EXV1/EXV2制热初始步数')
+        self.labels2[8].config(text='EXV1/EXV2制冷最小步数')
+        self.labels2[9].config(text='EXV1/EXV2制热最小步数')
+        self.labels2[10].config(text='EXV1/EXV2除霜初始步数')
+        self.labels2[11].config(text='初始上电压机预热时间/min')
+        self.labels2[12].config(text='测试模式频率偏差/Hz')
+        self.labels2[13].config(text='回水传感器补偿设定/℃')
+        self.labels2[14].config(text='出水传感器补偿设定/℃')
+        self.labels2[15].config(text='手动除霜最大时间/s')
+        self.labels2[16].config(text='夜间静音时长/Hour')
+        self.labels2[17].config(text='标准温差和大温差/℃')
+        self.labels2[18].config(text='制冷目标过热度/℃')
+        self.labels2[19].config(text='制热目标过热度/℃')
+        self.labels2[20].config(text='经济器目标过热度/℃')
+        self.labels2[21].config(text='容量（电流）限制/℃')
+        self.labels2[22].config(text='水阀动作时间/s')
+        self.labels2[23].config(text='水流开关报警延时/s')
+        self.labels2[24].config(text='静音设置')
+        self.labels2[25].config(text='禁止制冷室外环温上限/℃')
+        self.labels2[26].config(text='禁止制冷室外环温下限/℃')
+        self.labels2[27].config(text='禁止制热室外环温上限/℃')
+        self.labels2[28].config(text='禁止制热室外环温下限/℃')
+        self.labels2[29].config(text='模块机启动优先级')
+        self.labels2[30].config(text='关机后水泵运转时间/min')
+        self.labels2[31].config(text='CRC')
+        self.labels2[32].config(text='保留')
+        self.entries2[31].config(state='readonly')
+        self.unit_frame.place(relx=0, rely=0.39, relwidth=1, relheight=0.7)
+        self.control_frame = ttk.Frame(self.unit_frame)
+        self.label = ttk.Label(self.control_frame, text="选择显示的模块机号：")
+        self.combobox = ttk.Combobox(self.control_frame, values=list(range(1, 33)), width=13)
+        self.read_button = ttk.Button(self.control_frame, text="读取", command=self.start)
+        self.write_button = ttk.Button(self.control_frame, text="写入", command=self.start1)
+
+        self.label.grid(row=0, column=0, pady=(0, 5))
+        self.combobox.grid(row=1, column=0)
+        self.combobox.current(0)
+        self.combobox.bind("<<ComboboxSelected>>", self.change_unitnumber)
+        self.read_button.grid(row=2, column=0, pady=5)
+        self.write_button.grid(row=4, column=0, pady=5)
+
+        self.canvas = tk.Canvas(self.control_frame)
+        self.canvas.place(relx=0.02, rely=0.4, relwidth=0.59, relheight=0.02)
+        self.progress_bar = ttk.Progressbar(self.canvas, mode='determinate', length=120)
+        self.progress_bar.place(relx=-0.02, rely=-0.2)
+
+        self.control_frame.place(relx=0.8, rely=0, relwidth=0.25, relheight=1)
+        self.ex_number = int(self.combobox.get()) - 1
+
+    def checkbox_change_event(self, index):
+        self.checkboxes[index].configure(style="Red.TCheckbutton")
+
+    def change_combobox_color(self, event):
+        combobox = event.widget
+        selected_option = combobox.get()
+        if selected_option:
+            combobox.configure(foreground="red")
+        else:
+            combobox.configure(foreground="black")
+
+    def highlight_text(self, event):
+        # 检测到键盘输入文字时，将输入的部分标红
+        entry = event.widget
+        entry.config(foreground="red")
+
+    def perform_operation(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress(0)  # 开始更新进度条
+
+    def update_progress(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(2, self.update_progress, progress)  # 每隔1毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def perform_operation1(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress1(0)  # 开始更新进度条
+
+    def update_progress1(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(20, self.update_progress1, progress)  # 每隔1毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def read_function(self):
+        update_data = []
+        m_hDeviceHandle = open_device()
+        self.perform_operation()  # 将进度条设置为100
+        data_WRCsysconfig[0] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1000, 82)
+
+        if data_WRCsysconfig[0] == -666:
+            return
+        for i in range(32):
+            data_WRCunit[i] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x10D0 + i * 72, 64)
+            if data_WRCunit[i] == -666:
+                return
+
+        close_device(m_hDeviceHandle)
+
+        for i in range(2):
+            bit_value = (data_WRCsysconfig[0][2] >> (1 - i)) & 1
+
+            # 比较第3位的值
+            if bit_value == 0:
+                self.variables[i].set(False)
+                self.checkboxes[i].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i].set(True)
+                self.checkboxes[i].configure(style="Black.TCheckbutton")
+        for i in range(4):
+            bit_value = (data_WRCsysconfig[0][1] >> (7 - i)) & 1
+
+            # 比较第3位的值
+            if bit_value == 0:
+                self.variables[i + 2].set(False)
+                self.checkboxes[i + 2].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i + 2].set(True)
+                self.checkboxes[i + 2].configure(style="Black.TCheckbutton")
+        for i in range(2):
+            bit_value = (data_WRCsysconfig[0][1] >> (i * 2)) & 3
+            # 比较第3位的值
+            if i == 1:
+                self.heating_control_combobox.current(bit_value)
+                self.heating_control_combobox.configure(foreground="black")
+            else:
+                self.cooling_control_combobox.current(bit_value)
+                self.cooling_control_combobox.configure(foreground="black")
+        for i in range(8):
+            bit_value = (data_WRCsysconfig[0][0] >> (7 - i)) & 1
+
+            # 比较第3位的值
+            if bit_value == 0:
+                self.variables[i + 6].set(False)
+                self.checkboxes[i + 6].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i + 6].set(True)
+                self.checkboxes[i + 6].configure(style="Black.TCheckbutton")
+        for i in range(6, 6 + 2 * 38, 2):
+            value = (data_WRCsysconfig[0][i + 1] << 8) | data_WRCsysconfig[0][i]
+            update_data.append(value)
+
+        for i in range(len(update_data)):
+            if i == 0 or i == 2 or 11 <= i <= 13 or i == 28 or i == 29 or 32 <= i <= 34 or i == 36:
+                self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                self.entries[i].insert(0, update_data[i])
+                self.entries[i].config(foreground="black")
+            elif 3 <= i <= 10 or 14 <= i <= 21 or 23 <= i <= 27 or i == 30 or i == 31 or i == 35:
+                self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                if update_data[i] > 32767:
+                    self.entries[i].insert(0, '-' + str((65536 - update_data[i]) // 10) + '.' + str(
+                        (65536 - update_data[i]) % 10))  # 在文本框中插入数据
+                else:
+                    self.entries[i].insert(0, str(update_data[i] // 10) + '.' + str(
+                        update_data[i] % 10))  # 在文本框中插入数据
+                self.entries[i].config(foreground="black")
+            elif i == 37:
+                self.entries[i].config(state='normal')
+                self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(update_data[i])
+                self.entries[i].insert(0, '0x' + hex_value)
+                self.entries[i].config(foreground="black")
+                self.entries[i].config(state='readonly')
+            else:
+                self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(update_data[i])
+                self.entries[i].insert(0, '0x' + hex_value)
+                self.entries[i].config(foreground="black")
+
+        update_data = []
+        for i in range(0, 0 + 2 * 32, 2):
+            value = (data_WRCunit[int(self.combobox.get()) - 1][i + 1] << 8) | \
+                    data_WRCunit[int(self.combobox.get()) - 1][i]
+            update_data.append(value)
+        for i in range(len(update_data)):
+            if 0 <= i <= 2 or 6 <= i <= 11 or i == 15 or i == 16 or 21 <= i <= 24 or i == 29 or i == 30:
+                self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                self.entries2[i].insert(0, update_data[i])
+                self.entries2[i].config(foreground="black")
+            elif 3 <= i <= 5 or 12 <= i <= 14 or 17 <= i <= 20 or 25 <= i <= 28:
+                self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                if update_data[i] > 32767:
+                    self.entries2[i].insert(0, '-' + str((65536 - update_data[i]) // 10) + '.' + str(
+                        (65536 - update_data[i]) % 10))  # 在文本框中插入数据
+                else:
+                    self.entries2[i].insert(0, str(update_data[i] // 10) + '.' + str(
+                        update_data[i] % 10))  # 在文本框中插入数据
+                self.entries2[i].config(foreground="black")
+            elif i == 31:
+                self.entries2[i].config(state='normal')
+                self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(update_data[i])
+                self.entries2[i].insert(0, '0x' + hex_value)
+                self.entries2[i].config(foreground="black")
+                self.entries2[i].config(state='readonly')
+            else:
+                self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(update_data[i])
+                self.entries2[i].insert(0, '0x' + hex_value)
+                self.entries2[i].config(foreground="black")
+
+
+    def write_function(self):
+        if data_WRCsysconfig[0] != []:
+            m_hDeviceHandle = open_device()
+            value = bin(data_WRCsysconfig[0][2])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+            temp = ''
+            for i in range(2):
+                temp = temp + str(self.variables[i].get())
+            value = value[:6] + temp
+            data_WRCsysconfig[0][2] = int(value, 2)
+            temp = ''
+            for i in range(4):
+                temp = temp + str(self.variables[i + 2].get())
+            value = self.heating_control_combobox.get()
+            value = bin(int(value[0]))[2:].zfill(2)  # 使用zfill()方法填充零位至八位
+            temp = temp + value
+            value = self.cooling_control_combobox.get()
+            value = bin(int(value[0]))[2:].zfill(2)  # 使用zfill()方法填充零位至八位
+            temp = temp + value
+            data_WRCsysconfig[0][1] = int(temp, 2)
+            temp = ''
+            for i in range(8):
+                temp = temp + str(self.variables[i + 6].get())
+            data_WRCsysconfig[0][0] = int(temp, 2)
+
+            for i in range(len(self.entries)):
+                high, low = convert_to_hex(self.entries[i].get())
+                data_WRCsysconfig[0][6 + i * 2] = low
+                data_WRCsysconfig[0][7 + i * 2] = high
+            for i in range(len(self.entries2) - 1):
+                high, low = convert_to_hex(self.entries2[i].get())
+                data_WRCunit[int(self.combobox.get()) - 1][0 + i * 2] = low
+                data_WRCunit[int(self.combobox.get()) - 1][1 + i * 2] = high
+            buffer = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1052, 126)
+            buffer = list(data_WRCsysconfig[0][:-2]) + list(buffer)
+            crch, crcl = CRC16(buffer, len(buffer) - 2)
+            data_WRCsysconfig[0][-2:] = [crcl, crch]
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1000, 32, data_WRCsysconfig[0][:32])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1000 + 0x20, 32, data_WRCsysconfig[0][32:64])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1000 + 0x40, 18, data_WRCsysconfig[0][64:])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            self.perform_operation1()  # 将进度条设置为100
+
+            for i in range(32):
+                buffer = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1110, 8)
+                buffer = list(data_WRCunit[0][:-2]) + list(buffer)
+                crch, crcl = CRC16(buffer, len(buffer) - 2)
+                data_WRCunit[i][-2:] = [crcl, crch]
+                page_start_address = 0x10D0 + i * 72
+                if page_start_address % 32 != 0:
+                    # 计算当前页剩余的字节数
+                    remaining_size = 32 - (page_start_address % 32)
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address, remaining_size,
+                                       data_WRCunit[i][:remaining_size])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+                    next_page_start_address = page_start_address + remaining_size
+                    # 写入剩余部分的数据到下一页的起始地址
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address, 32,
+                                       data_WRCunit[i][remaining_size:remaining_size + 32])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+                    next_page_start_address = next_page_start_address + 0x20
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address,
+                                       32 - remaining_size,
+                                       data_WRCunit[i][remaining_size + 32:64])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+                else:
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address, 32,
+                                       data_WRCunit[i][:32])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address + 0x20, 32,
+                                       data_WRCunit[i][32:64])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+            close_device(m_hDeviceHandle)
+        else:
+            msg.showinfo("Error!", "请先读取数据！")
+
+    def change_unitnumber(self, event):
+        if data_WRCunit[self.ex_number] != []:
+            for i in range(len(self.entries2) - 1):
+                high, low = convert_to_hex(self.entries2[i].get())
+                data_WRCunit[self.ex_number][0 + i * 2] = low
+                data_WRCunit[self.ex_number][1 + i * 2] = high
+            self.ex_number = int(self.combobox.get()) - 1
+            update_data = []
+
+            for i in range(0, 0 + 2 * 32, 2):
+                value = (data_WRCunit[int(self.combobox.get()) - 1][i + 1] << 8) | \
+                        data_WRCunit[int(self.combobox.get()) - 1][i]
+                update_data.append(value)
+            for i in range(len(update_data)):
+                if 0 <= i <= 2 or 6 <= i <= 11 or i == 15 or i == 16 or 21 <= i <= 24 or i == 29 or i == 30:
+                    self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                    self.entries2[i].insert(0, update_data[i])
+                    self.entries2[i].config(foreground="black")
+                elif 3 <= i <= 5 or 12 <= i <= 14 or 17 <= i <= 20 or 25 <= i <= 28:
+                    self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                    if update_data[i] > 32767:
+                        self.entries2[i].insert(0, '-' + str((65536 - update_data[i]) // 10) + '.' + str(
+                            (65536 - update_data[i]) % 10))  # 在文本框中插入数据
+                        self.entries2[i].config(foreground="black")
+                    else:
+                        self.entries2[i].insert(0, str(update_data[i] // 10) + '.' + str(
+                            update_data[i] % 10))  # 在文本框中插入数据
+                        self.entries2[i].config(foreground="black")
+                elif i==31:
+                    self.entries2[i].config(state='normal')
+                    self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                    hex_value = "{:04X}".format(update_data[i])
+                    self.entries2[i].insert(0, '0x' + hex_value)
+                    self.entries2[i].config(state='readonly')
+                    self.entries2[i].config(foreground="black")
+                else:
+                    self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                    hex_value = "{:04X}".format(update_data[i])
+                    self.entries2[i].insert(0, '0x' + hex_value)
+                    self.entries2[i].config(foreground="black")
+
+        else:
+            self.ex_number = int(self.combobox.get()) - 1
+            msg.showinfo("Error!", "请先读取数据！")
+
+    def start(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.read_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+    def start1(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.write_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+
+class AlarmHistoryTab(tk.Frame):
+    def __init__(self, master, alarmhistory_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.alarmhistory_name = alarmhistory_name
+        self.T = None
+        self.flag = threading.Event()
+        # self.label = ttk.Label(root, text="选择显示的模块机号：")
+        self.alarm_frame = ttk.Labelframe(self, text="故障历史记录")
+        self.labels = []
+        self.entries = []
+        for i in range(50):
+            col = i // 11  # 计算列数
+            row = i % 11  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.alarm_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=1, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.alarm_frame, width=5, style='Custom1.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=0, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='故障代码')
+        self.labels[1].config(text='CPU上电周期')
+        self.labels[2].config(text='故障发生时间戳/s')
+        self.labels[3].config(text='故障发生累积次数')
+        self.labels[4].config(text='压机频率(Cycle1)/Hz')
+        self.labels[5].config(text='压机频率(Cycle2)/Hz')
+        self.labels[6].config(text='压机频率(Cycle3)/Hz')
+        self.labels[7].config(text='压机频率(Cycle4)/Hz')
+        self.labels[8].config(text='风机档位(Cycle1)')
+        self.labels[9].config(text='风机档位(Cycle2)')
+        self.labels[10].config(text='风机档位(Cycle3)')
+        self.labels[11].config(text='风机档位(Cycle4)')
+        self.labels[12].config(text='排气压力(Cycle1)/kpa')
+        self.labels[13].config(text='排气压力(Cycle2)/kpa')
+        self.labels[14].config(text='排气压力(Cycle3)/kpa')
+        self.labels[15].config(text='排气压力(Cycle4)/kpa')
+        self.labels[16].config(text='吸气压力(Cycle1)/kpa')
+        self.labels[17].config(text='吸气压力(Cycle2)/kpa')
+        self.labels[18].config(text='吸气压力(Cycle3)/kpa')
+        self.labels[19].config(text='吸气压力(Cycle4)/kpa')
+        self.labels[20].config(text='排气温度(Cycle1)/℃')
+        self.labels[21].config(text='排气温度(Cycle2)/℃')
+        self.labels[22].config(text='排气温度(Cycle3)/℃')
+        self.labels[23].config(text='排气温度(Cycle4)/℃')
+        self.labels[24].config(text='吸气温度(Cycle1)/℃')
+        self.labels[25].config(text='吸气温度(Cycle2)/℃')
+        self.labels[26].config(text='吸气温度(Cycle3)/℃')
+        self.labels[27].config(text='吸气温度(Cycle4)/℃')
+        self.labels[28].config(text='环境温度/℃')
+        self.labels[29].config(text='模块回水温度/℃')
+        self.labels[30].config(text='模块出水温度/℃')
+        self.labels[31].config(text='系统出水温度/℃')
+        self.labels[32].config(text='化霜传感器温度(Cycle1)/℃')
+        self.labels[33].config(text='化霜传感器温度(Cycle2)/℃')
+        self.labels[34].config(text='化霜传感器温度(Cycle3)/℃')
+        self.labels[35].config(text='化霜传感器温度(Cycle4)/℃')
+        self.labels[36].config(text='经济器进口温度(Cycle1)/℃')
+        self.labels[37].config(text='经济器进口温度(Cycle2)/℃')
+        self.labels[38].config(text='经济器进口温度(Cycle3)/℃')
+        self.labels[39].config(text='经济器进口温度(Cycle4)/℃')
+        self.labels[40].config(text='经济器出口温度(Cycle1)/℃')
+        self.labels[41].config(text='经济器出口温度(Cycle2)/℃')
+        self.labels[42].config(text='经济器出口温度(Cycle3)/℃')
+        self.labels[43].config(text='经济器出口温度(Cycle4)/℃')
+        self.labels[44].config(text='机组系列')
+        self.labels[45].config(text='单元地址')
+        self.labels[46].config(text='机组容量')
+        self.labels[47].config(text='主CPU号')
+        self.labels[48].config(text='从CPU号')
+        self.labels[49].config(text='CRC')
+        self.entries[49].config(state='readonly')
+        self.alarm_frame.place(relx=0, rely=0, relwidth=1, relheight=0.58)
+
+        self.unit_frame = ttk.LabelFrame(self, text='模块单元状态')
+        self.checkboxes = []
+        self.variables = []
+        self.texts = ["来电重启", "外机防雪", "高湿除霜", "容量限制", "Tier1", "低温机组", "公用水泵", "防冻液", "测试模式", "除霜中",
+                      "水泵循环", "制热", "制冷", "运行"]
+        for i, text in enumerate(self.texts):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.unit_frame, text=text, variable=var)
+            self.checkbox.grid(row=i % 7, column=i // 7, sticky="w", padx=4, pady=2)
+            self.checkbox.bind('<Button-1>', lambda event, index=i: self.checkbox_change_event_unit(index))
+            self.variables.append(var)
+            self.checkboxes.append(self.checkbox)
+        self.unit_frame.place(relx=0, rely=0.58, relwidth=0.25, relheight=0.42)
+        self.main_frame = ttk.LabelFrame(self, text='主CPU基板DO状态')
+        self.checkboxes2 = []
+        self.variables2 = []
+        for i in range(24):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.main_frame, text='DO' + str(24 - i), variable=var)
+            self.checkbox.grid(row=i % 8, column=i // 8, sticky="w", padx=4, pady=1)
+            self.checkbox.bind('<Button-1>', lambda event, index=i: self.checkbox_change_event_main(index))
+            self.variables2.append(var)
+            self.checkboxes2.append(self.checkbox)
+        self.main_frame.place(relx=0.25, rely=0.58, relwidth=0.25, relheight=0.42)
+        self.sub_frame = ttk.LabelFrame(self, text='从CPU基板DO状态')
+        self.checkboxes3 = []
+        self.variables3 = []
+        for i in range(24):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.sub_frame, text='DO' + str(24 - i), variable=var)
+            self.checkbox.grid(row=i % 8, column=i // 8, sticky="w", padx=4, pady=1)
+            self.checkbox.bind('<Button-1>', lambda event, index=i: self.checkbox_change_event_sub(index))
+            self.variables3.append(var)
+            self.checkboxes3.append(self.checkbox)
+        self.sub_frame.place(relx=0.5, rely=0.58, relwidth=0.25, relheight=0.42)
+        self.control_frame = ttk.Frame(self)
+        self.label = ttk.Label(self.control_frame, text="选择显示的故障记录号：")
+        self.combobox = ttk.Combobox(self.control_frame, values=list(range(1, 33)), width=13)
+        self.read_button = ttk.Button(self.control_frame, text="读取", command=self.start)
+        self.write_button = ttk.Button(self.control_frame, text="写入", command=self.start1)
+
+        self.label.grid(row=0, column=0, pady=(0, 5))
+        self.combobox.grid(row=1, column=0)
+        self.combobox.current(0)
+        self.combobox.bind("<<ComboboxSelected>>", self.change_unitnumber)
+        self.read_button.grid(row=2, column=0, pady=5)
+        self.write_button.grid(row=4, column=0, pady=5)
+
+        self.canvas = tk.Canvas(self.control_frame)
+        self.canvas.place(relx=0.05, rely=0.6, relwidth=0.59, relheight=0.025)
+        self.progress_bar = ttk.Progressbar(self.canvas, mode='determinate', length=120)
+        self.progress_bar.place(relx=-0.02, rely=-0.2)
+
+        self.control_frame.place(relx=0.8, rely=0.6, relwidth=0.25, relheight=0.42)
+        self.ex_number = int(self.combobox.get()) - 1
+
+    def highlight_text(self, event):
+        # 检测到键盘输入文字时，将输入的部分标红
+        entry = event.widget
+        entry.config(foreground="red")
+
+    def read_function(self):
+
+        m_hDeviceHandle = open_device()
+        self.perform_operation()
+        for i in range(32):
+            data_AlarmHistory[i] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0000 + i * 76, 74)
+            if data_AlarmHistory[i] == -666:
+                return
+        self.update()
+
+        close_device(m_hDeviceHandle)
+
+    def write_function(self):
+        if data_AlarmHistory[0] != []:
+            self.update1()
+            m_hDeviceHandle = open_device()
+            self.perform_operation1()  # 将进度条设置为100
+            for i in range(32):
+                page_start_address = 0x0000 + i * 76
+                if page_start_address % 32 != 0:
+                    # 计算当前页剩余的字节数
+                    remaining_size = 32 - (page_start_address % 32)
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address, remaining_size,
+                                       data_AlarmHistory[i][:remaining_size])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+                    next_page_start_address = page_start_address + remaining_size
+                    # 写入剩余部分的数据到下一页的起始地址
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address, 32,
+                                       data_AlarmHistory[i][remaining_size:remaining_size + 32])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+                    if remaining_size >= 10:
+                        next_page_start_address = next_page_start_address + 0x20
+                        a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address,
+                                           42 - remaining_size,
+                                           data_AlarmHistory[i][remaining_size + 32:74])
+                        time.sleep(0.01)
+                        if a == -666:
+                            return
+                    else:
+                        next_page_start_address = next_page_start_address + 0x20
+                        a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address,
+                                           32,
+                                           data_AlarmHistory[i][remaining_size + 32:64 + remaining_size])
+                        time.sleep(0.01)
+                        if a == -666:
+                            return
+                        next_page_start_address = next_page_start_address + 0x20
+                        a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, next_page_start_address,
+                                           10 - remaining_size,
+                                           data_AlarmHistory[i][64 + remaining_size:74])
+                        time.sleep(0.01)
+                        if a == -666:
+                            return
+                else:
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address, 32,
+                                       data_AlarmHistory[i][:32])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address + 0x20, 32,
+                                       data_AlarmHistory[i][32:64])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+                    a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, page_start_address + 0x40, 10,
+                                       data_AlarmHistory[i][64:74])
+                    time.sleep(0.01)
+                    if a == -666:
+                        return
+
+            close_device(m_hDeviceHandle)
+        else:
+            msg.showinfo("Error!", "请先读取数据！")
+
+    def checkbox_change_event_unit(self, index):
+        self.checkboxes[index].configure(style="Red.TCheckbutton")
+
+    def checkbox_change_event_main(self, index):
+        self.checkboxes2[index].configure(style="Red.TCheckbutton")
+
+    def checkbox_change_event_sub(self, index):
+        self.checkboxes3[index].configure(style="Red.TCheckbutton")
+
+    def perform_operation(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress(0)  # 开始更新进度条
+
+    def update_progress(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(2, self.update_progress, progress)  # 每隔20毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def perform_operation1(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress1(0)  # 开始更新进度条
+
+    def update_progress1(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(20, self.update_progress1, progress)  # 每隔1毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def start(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.read_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+    def start1(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.write_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+    def change_unitnumber(self, event):
+        if data_AlarmHistory[self.ex_number] != []:
+            temp = '0'
+            for i in range(2):
+                temp = temp + str(self.variables[i].get())
+            temp = temp + '0'
+            for i in range(4):
+                temp = temp + str(self.variables[i + 2].get())
+            data_AlarmHistory[self.ex_number][57] = int(temp, 2)
+            temp = ''
+            for i in range(8):
+                temp = temp + str(self.variables[i + 6].get())
+            data_AlarmHistory[self.ex_number][56] = int(temp, 2)
+            data_AlarmHistory[self.ex_number][59] = int(self.entries[44].get())
+            value1 = int(self.entries[45].get())
+            value2 = int(self.entries[46].get())
+
+            value = (value1 << 3) | value2
+
+            data_AlarmHistory[self.ex_number][58] = value
+            for i in range(3):
+                high, low = convert_to_hex(self.entries[47 + i].get())
+                data_AlarmHistory[self.ex_number][68 + 2 * i] = low
+                data_AlarmHistory[self.ex_number][69 + 2 * i] = high
+            value = self.entries[0].get()
+            bcd_part = value[:2]
+            ascii_part = value[2:]
+
+            bcd_int = int(bcd_part, 16)
+            ascii_int = ord(ascii_part)
+            data_AlarmHistory[self.ex_number][0] = ascii_int
+            data_AlarmHistory[self.ex_number][1] = bcd_int
+            for i in range(3):
+                value = int(self.entries[1 + i].get())
+                byte1 = (value >> 24) & 0xFF  # 获取高8位整数
+                byte2 = (value >> 16) & 0xFF  # 获取次高8位整数
+                byte3 = (value >> 8) & 0xFF  # 获取次低8位整数
+                byte4 = value & 0xFF  # 获取低8位整数
+                data_AlarmHistory[self.ex_number][4 + 4 * i] = byte4
+                data_AlarmHistory[self.ex_number][5 + 4 * i] = byte3
+                data_AlarmHistory[self.ex_number][6 + 4 * i] = byte2
+                data_AlarmHistory[self.ex_number][7 + 4 * i] = byte1
+            for j in range(3):
+                temp = ''
+                for i in range(8):
+                    temp = temp + str(self.variables2[i + 8 * j].get())
+                data_AlarmHistory[self.ex_number][62 - j] = int(temp, 2)
+            for j in range(3):
+                temp = ''
+                for i in range(8):
+                    temp = temp + str(self.variables3[i + 8 * j].get())
+                data_AlarmHistory[self.ex_number][66 - j] = int(temp, 2)
+            for i in range(len(self.entries) - 10):
+                data_AlarmHistory[self.ex_number][16 + i] = convert_to_hex1(self.entries[4 + i].get())
+            self.ex_number = int(self.combobox.get()) - 1
+            self.update()
+        else:
+            self.ex_number = int(self.combobox.get()) - 1
+            msg.showinfo("Error!", "请先读取数据！")
+
+    def update(self):
+        for i in range(2):
+            bit_value = (data_AlarmHistory[int(self.combobox.get()) - 1][57] >> (6 - i)) & 1
+            if bit_value == 0:
+                self.variables[i].set(False)
+                self.checkboxes[i].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i].set(True)
+                self.checkboxes[i].configure(style="Black.TCheckbutton")
+        for i in range(4):
+            bit_value = (data_AlarmHistory[int(self.combobox.get()) - 1][57] >> (3 - i)) & 1
+            if bit_value == 0:
+                self.variables[i + 2].set(False)
+                self.checkboxes[i + 2].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i + 2].set(True)
+                self.checkboxes[i + 2].configure(style="Black.TCheckbutton")
+        for i in range(8):
+            bit_value = (data_AlarmHistory[int(self.combobox.get()) - 1][56] >> (7 - i)) & 1
+            if bit_value == 0:
+                self.variables[i + 6].set(False)
+                self.checkboxes[i + 6].configure(style="Black.TCheckbutton")
+            else:
+                self.variables[i + 6].set(True)
+                self.checkboxes[i + 6].configure(style="Black.TCheckbutton")
+        value = bin(data_AlarmHistory[int(self.combobox.get()) - 1][58])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+
+        self.entries[45].delete(0, "end")  # 清空文本框中的内容
+        self.entries[45].insert(0, int(value[:5], 2))
+        self.entries[45].config(foreground="black")
+        self.entries[46].delete(0, "end")  # 清空文本框中的内容
+        self.entries[46].insert(0, int(value[5:], 2))
+        self.entries[46].config(foreground="black")
+        value = bin(data_AlarmHistory[int(self.combobox.get()) - 1][59])[2:].zfill(8)  # 使用zfill()方法填充零位至八位
+
+        self.entries[44].delete(0, "end")  # 清空文本框中的内容
+        self.entries[44].insert(0, int(value[6:], 2))
+        self.entries[44].config(foreground="black")
+        for i in range(68, 68 + 2 * 3, 2):
+            value = (data_AlarmHistory[int(self.combobox.get()) - 1][i + 1] << 8) | \
+                    data_AlarmHistory[int(self.combobox.get()) - 1][i]
+            if int((i - 68) / 2) + 47 == 49:
+                self.entries[int((i - 68) / 2) + 47].config(state='normal')  # 清空文本框中的内容
+                self.entries[int((i - 68) / 2) + 47].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(value)
+                self.entries[int((i - 68) / 2) + 47].insert(0, '0x' + hex_value)
+                self.entries[int((i - 68) / 2) + 47].config(foreground="black")
+                self.entries[int((i - 68) / 2) + 47].config(state='readonly')  # 清空文本框中的内容
+            else:
+                self.entries[int((i - 68) / 2) + 47].delete(0, "end")  # 清空文本框中的内容
+                hex_value = "{:04X}".format(value)
+                self.entries[int((i - 68) / 2) + 47].insert(0, '0x' + hex_value)
+                self.entries[int((i - 68) / 2) + 47].config(foreground="black")
+        for j in range(3):
+            for i in range(8):
+                bit_value = (data_AlarmHistory[int(self.combobox.get()) - 1][62 - j] >> (7 - i)) & 1
+                if bit_value == 0:
+                    self.variables2[i + j * 8].set(False)
+                    self.checkboxes2[i + j * 8].configure(style="Black.TCheckbutton")
+                else:
+                    self.variables2[i + j * 8].set(True)
+                    self.checkboxes2[i + j * 8].configure(style="Black.TCheckbutton")
+        for j in range(3):
+            for i in range(8):
+                bit_value = (data_AlarmHistory[int(self.combobox.get()) - 1][66 - j] >> (7 - i)) & 1
+                if bit_value == 0:
+                    self.variables3[i + j * 8].set(False)
+                    self.checkboxes3[i + j * 8].configure(style="Black.TCheckbutton")
+                else:
+                    self.variables3[i + j * 8].set(True)
+                    self.checkboxes3[i + j * 8].configure(style="Black.TCheckbutton")
+        value1 = data_AlarmHistory[int(self.combobox.get()) - 1][1]
+        value = data_AlarmHistory[int(self.combobox.get()) - 1][0]
+        self.entries[0].delete(0, "end")  # 清空文本框中的内容
+        hex_value = "{:02X}".format(value1)
+        self.entries[0].insert(0, hex_value + chr(value))
+        self.entries[0].config(foreground="black")
+        for i in range(3):
+            value1 = (data_AlarmHistory[int(self.combobox.get()) - 1][7 + 4 * i] << 8) | \
+                     data_AlarmHistory[int(self.combobox.get()) - 1][6 + 4 * i]
+            value2 = (data_AlarmHistory[int(self.combobox.get()) - 1][5 + 4 * i] << 8) | \
+                     data_AlarmHistory[int(self.combobox.get()) - 1][4 + 4 * i]
+            value3 = (value1 << 16) | value2
+            self.entries[1 + i].delete(0, "end")  # 清空文本框中的内容
+            self.entries[1 + i].insert(0, value3)
+            self.entries[1 + i].config(foreground="black")
+        for i in range(len(self.entries) - 10):
+            value = data_AlarmHistory[int(self.combobox.get()) - 1][16 + i]
+            if 24 <= i <= 27:
+                self.entries[i + 4].delete(0, "end")  # 清空文本框中的内容
+                self.entries[i + 4].insert(0, str(value // 10) + '.' + str(
+                    value % 10))
+                self.entries[i + 4].config(foreground="black")
+            else:
+
+                self.entries[i + 4].delete(0, "end")  # 清空文本框中的内容
+                if value > 127:
+                    self.entries[i + 4].insert(0, '-' + str((256 - value)))  # 在文本框中插入数据
+                else:
+                    self.entries[i + 4].insert(0, value)  # 在文本框中插入数据
+                self.entries[i + 4].config(foreground="black")
+
+    def update1(self):
+        temp = '0'
+        for i in range(2):
+            temp = temp + str(self.variables[i].get())
+        temp = temp + '0'
+        for i in range(4):
+            temp = temp + str(self.variables[i + 2].get())
+        data_AlarmHistory[int(self.combobox.get()) - 1][57] = int(temp, 2)
+        temp = ''
+        for i in range(8):
+            temp = temp + str(self.variables[i + 6].get())
+        data_AlarmHistory[int(self.combobox.get()) - 1][56] = int(temp, 2)
+        data_AlarmHistory[int(self.combobox.get()) - 1][59] = int(self.entries[44].get())
+        value1 = int(self.entries[45].get())
+        value2 = int(self.entries[46].get())
+
+        value = (value1 << 3) | value2
+
+        data_AlarmHistory[int(self.combobox.get()) - 1][58] = value
+        for i in range(3):
+            high, low = convert_to_hex(self.entries[47 + i].get())
+            data_AlarmHistory[int(self.combobox.get()) - 1][68 + 2 * i] = low
+            data_AlarmHistory[int(self.combobox.get()) - 1][69 + 2 * i] = high
+        value = self.entries[0].get()
+        bcd_part = value[:2]
+        ascii_part = value[2:]
+
+        bcd_int = int(bcd_part, 16)
+        ascii_int = ord(ascii_part)
+        data_AlarmHistory[int(self.combobox.get()) - 1][0] = ascii_int
+        data_AlarmHistory[int(self.combobox.get()) - 1][1] = bcd_int
+        for i in range(3):
+            value = int(self.entries[1 + i].get())
+            byte1 = (value >> 24) & 0xFF  # 获取高8位整数
+            byte2 = (value >> 16) & 0xFF  # 获取次高8位整数
+            byte3 = (value >> 8) & 0xFF  # 获取次低8位整数
+            byte4 = value & 0xFF  # 获取低8位整数
+            data_AlarmHistory[int(self.combobox.get()) - 1][4 + 4 * i] = byte4
+            data_AlarmHistory[int(self.combobox.get()) - 1][5 + 4 * i] = byte3
+            data_AlarmHistory[int(self.combobox.get()) - 1][6 + 4 * i] = byte2
+            data_AlarmHistory[int(self.combobox.get()) - 1][7 + 4 * i] = byte1
+        for j in range(3):
+            temp = ''
+            for i in range(8):
+                temp = temp + str(self.variables2[i + 8 * j].get())
+            data_AlarmHistory[int(self.combobox.get()) - 1][62 - j] = int(temp, 2)
+        for j in range(3):
+            temp = ''
+            for i in range(8):
+                temp = temp + str(self.variables3[i + 8 * j].get())
+            data_AlarmHistory[int(self.combobox.get()) - 1][66 - j] = int(temp, 2)
+        for i in range(len(self.entries) - 10):
+            data_AlarmHistory[int(self.combobox.get()) - 1][16 + i] = convert_to_hex1(self.entries[4 + i].get())
+        for i in range(32):
+            crch, crcl = CRC16(data_AlarmHistory[i], len(data_AlarmHistory[i]) - 2)
+            data_AlarmHistory[i][-2:] = [crcl, crch]
+
+
+class LeftTab(tk.Frame):
+    def __init__(self, master, left_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.T = None
+        self.flag = threading.Event()
+        self.left_name = left_name
+        self.fix_frame = ttk.Labelframe(self, text="固化参数")
+        self.labels = []
+        self.entries = []
+        for i in range(36):
+            col = i // 11  # 计算列数
+            row = i % 11  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.fix_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=2, pady=2, sticky='w')
+            self.labels.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.fix_frame, width=6, style='Custom1.TEntry')
+            self.entry.grid(row=row, column=2 * col + 1, padx=2, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries.append(self.entry)
+        self.labels[0].config(text='制热初始除霜频率/Hz')
+        self.labels[1].config(text='制热除霜频率/Hz')
+        self.labels[2].config(text='除霜申请Tam值/℃')
+        self.labels[3].config(text='压缩机累计运行时间/min')
+        self.labels[4].config(text='防冻保护临时变量D/℃')
+        self.labels[5].config(text='防冻运行的压缩机数量')
+        self.labels[6].config(text='防冻保护退出水温/℃')
+        self.labels[7].config(text='防冻运行时间/min')
+        self.labels[8].config(text='制冷回油频率/Hz')
+        self.labels[9].config(text='制热回油频率/Hz')
+        self.labels[10].config(text='回油最长时间/min')
+        self.labels[11].config(text='静音1风机挡位上限')
+        self.labels[12].config(text='静音2风机挡位上限')
+        self.labels[13].config(text='EXV3制冷初始步数Step')
+        self.labels[14].config(text='EXV3制热初始步数Step')
+        self.labels[15].config(text='EXV3制冷最小步数Step')
+        self.labels[16].config(text='EXV3制热最小步数Step')
+        self.labels[17].config(text='EXV3制冷最大步数Step')
+        self.labels[18].config(text='EXV3制热最大步数Step')
+        self.labels[19].config(text='EXV3除霜初始步数Step')
+        self.labels[20].config(text='EXV3除霜最大步数Step')
+        self.labels[21].config(text='EXV3除霜最小步数Step')
+        self.labels[22].config(text='制冷初始频率Fi_c_ini/Hz')
+        self.labels[23].config(text='制热初始频率Fi_h_ini/Hz')
+        self.labels[24].config(text='额定制冷频率Fi_c_rating/Hz')
+        self.labels[25].config(text='额定制热频率Fi_h_rating/Hz')
+        self.labels[26].config(text='最大标准频率Fimax/Hz')
+        self.labels[27].config(text='静音1频率Fimax/Hz')
+        self.labels[28].config(text='静音2频率Fimax/Hz')
+        self.labels[29].config(text='排气温度过高报警值1')
+        self.labels[30].config(text='排气温度过高报警值2')
+        self.labels[31].config(text='排气压力过高报警值/kPa')
+        self.labels[32].config(text='吸气压力过低报警值/kPa')
+        self.labels[33].config(text='水温采样周期/s')
+        self.labels[34].config(text='压缩机目标运转频率/Hz')
+        self.labels[35].config(text='CRC')
+        self.entries[35].config(state='readonly')
+        self.fix_frame.place(relx=0, rely=0, relwidth=1, relheight=0.58)
+        self.chillerlink_frame = ttk.LabelFrame(self, text='连接确认信息')
+        self.checkboxes = []
+        self.variables = []
+        for i in range(32):
+            var = tk.IntVar()
+            self.checkbox = ttk.Checkbutton(self.chillerlink_frame, text=str(32 - i) + '号机', variable=var)
+            self.checkbox.grid(row=i % 8, column=i // 8, sticky="w", padx=4, pady=1)
+            self.checkbox.bind('<Button-1>', lambda event, index=i: self.checkbox_change_event(index))
+            self.variables.append(var)
+            self.checkboxes.append(self.checkbox)
+        self.chillerlink_frame.place(relx=0, rely=0.58, relwidth=0.36, relheight=0.42)
+        self.long_frame = ttk.LabelFrame(self, text='永久信息')
+        self.labels2 = []
+        self.entries2 = []
+        for i in range(3):
+            col = i // 3  # 计算列数
+            row = i % 3  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.long_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=2, pady=2, sticky='w')
+            self.labels2.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.long_frame, width=17)
+            self.entry.grid(row=row, column=2 * col + 1, padx=2, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries2.append(self.entry)
+        self.entries2[2].config(state='readonly')
+        self.labels2[0].config(text='CPU上电周期（次）')
+        self.labels2[1].config(text='累计运行时间（小时）')
+        self.labels2[2].config(text='CRC校验值')
+        self.long_frame.place(relx=0.36, rely=0.58, relwidth=0.36, relheight=0.21)
+        self.boot_frame = ttk.LabelFrame(self, text='Bootloader+连接确认CRC校验值')
+        self.labels3 = []
+        self.entries3 = []
+        for i in range(3):
+            col = i // 3  # 计算列数
+            row = i % 3  # 计算行数
+
+            # 创建可编辑的 Label
+            self.label = ttk.Label(self.boot_frame, text="预留", justify='left')
+            self.label.grid(row=row, column=2 * col, padx=2, pady=2, sticky='w')
+            self.labels3.append(self.label)
+
+            # 创建只读的 Entry，并应用自定义样式
+            self.entry = ttk.Entry(self.boot_frame, width=17)
+            self.entry.grid(row=row, column=2 * col + 1, padx=2, pady=2)
+            self.entry.insert(0, "0")
+            self.entry.bind("<Key>", self.highlight_text)
+            self.entries3.append(self.entry)
+        self.labels3[0].config(text='Bootloader版本号')
+        self.labels3[1].config(text='CRC校验值')
+        self.labels3[2].config(text='连接确认CRC校验')
+        self.entries3[2].config(state='readonly')
+        self.entries3[1].config(state='readonly')
+        self.boot_frame.place(relx=0.36, rely=0.79, relwidth=0.36, relheight=0.21)
+        self.control_frame = ttk.Frame(self)
+        self.label = ttk.Label(self.control_frame, text="                                  ")
+        self.read_button = ttk.Button(self.control_frame, text="读取", command=self.start)
+        self.write_button = ttk.Button(self.control_frame, text="写入", command=self.start1)
+
+        self.label.grid(row=0, column=0, pady=(0, 5))
+        self.read_button.grid(row=2, column=0, pady=5)
+        self.write_button.grid(row=4, column=0, pady=5)
+
+        self.canvas = tk.Canvas(self.control_frame)
+        self.canvas.place(relx=0.05, rely=0.55, relwidth=0.59, relheight=0.025)
+        self.progress_bar = ttk.Progressbar(self.canvas, mode='determinate', length=120)
+        self.progress_bar.place(relx=-0.02, rely=-0.2)
+
+        self.control_frame.place(relx=0.77, rely=0.6, relwidth=0.25, relheight=0.42)
+
+    def highlight_text(self, event):
+        # 检测到键盘输入文字时，将输入的部分标红
+        entry = event.widget
+        entry.config(foreground="red")
+
+    def checkbox_change_event(self, index):
+        self.checkboxes[index].configure(style="Red.TCheckbutton")
+
+    def perform_operation(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress(0)  # 开始更新进度条
+
+    def update_progress(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(1, self.update_progress, progress)  # 每隔20毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def perform_operation1(self):
+        self.progress_bar["value"] = 0  # 将进度条重置为0
+        self.update_progress1(0)  # 开始更新进度条
+
+    def update_progress1(self, progress):
+        if progress <= 100:
+            self.progress_bar["value"] = progress  # 更新进度条的值
+            progress += 1  # 增加进度
+            self.after(5, self.update_progress1, progress)  # 每隔1毫秒调用自身更新进度
+            self.read_button.config(state='disabled')
+            self.write_button.config(state='disabled')
+        else:
+            self.progress_bar["value"] = 100  # 将进度条设置为100
+            self.read_button.config(state='normal')
+            self.write_button.config(state='normal')
+
+    def read_function(self):
+
+        m_hDeviceHandle = open_device()
+        self.perform_operation()
+        data_fix[0] = []
+        data_fix[0] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C40, 8)
+        if data_fix[0] == -666:
+            return
+        data_fix[0] = list(data_fix[0])  # 将 c_ubyte_Array_8 转换为列表类型
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C6C, 8)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C98, 6)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CC4, 4)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CF0, 18)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0D1C, 14)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0D48, 8)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0DCC, 4)
+        time.sleep(0.01)
+        data_fix[0] += i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0DF8, 2)
+        time.sleep(0.01)
+        data_chillerlink[0] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C00, 6)
+        time.sleep(0.01)
+        data_long[0] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1F00, 10)
+        time.sleep(0.01)
+        data_bootloader[0] = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x2000, 6)
+        self.update()
+
+
+        close_device(m_hDeviceHandle)
+
+    def write_function(self):
+
+        if data_fix[0] != []:
+            m_hDeviceHandle = open_device()
+            self.perform_operation1()  # 将进度条设置为100
+            for i in range(len(self.entries)):
+                high, low = convert_to_hex(self.entries[i].get())
+                data_fix[0][0 + 2 * i] = low
+                data_fix[0][1 + 2 * i] = high
+
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C48, 36)
+            time.sleep(0.01)
+            buffer = list(data_fix[0][:8]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C74, 36)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][8:16]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C9E, 38)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][16:22]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CC8, 40)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][22:26]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0D02, 26)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][26:44]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xD2A, 30)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][44:58]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xD50, 36)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][58:66]) + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xD74, 44)
+            time.sleep(0.01)
+            buffer = buffer + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xDA0, 44)
+            time.sleep(0.01)
+            buffer = buffer + list(temp)
+            temp = i2c_read_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xDD0, 40)
+            time.sleep(0.01)
+            buffer = buffer + list(data_fix[0][66:70]) + list(temp)
+
+            crch, crcl = CRC16(buffer, len(buffer))
+
+            data_fix[0][-2:] = [crcl, crch]
+            for j in range(4):
+                temp = '0'
+                for i in range(8):
+                    temp = temp + str(self.variables[i + j * 8].get())
+                data_chillerlink[0][3 - j] = int(temp, 2)
+            crch, crcl = CRC16(data_chillerlink[0], len(data_chillerlink[0]) - 2)
+            data_chillerlink[0][-2:] = [crcl, crch]
+            for i in range(2):
+                value = int(self.entries2[i].get())
+                byte1 = (value >> 24) & 0xFF  # 获取高8位整数
+                byte2 = (value >> 16) & 0xFF  # 获取次高8位整数
+                byte3 = (value >> 8) & 0xFF  # 获取次低8位整数
+                byte4 = value & 0xFF  # 获取低8位整数
+                data_long[0][0 + 4 * i] = byte4
+                data_long[0][1 + 4 * i] = byte3
+                data_long[0][2 + 4 * i] = byte2
+                data_long[0][3 + 4 * i] = byte1
+            crch, crcl = CRC16(data_long[0], len(data_long[0]) - 2)
+            data_long[0][-2:] = [crcl, crch]
+            value = self.entries3[0].get()
+            value = int(value, 16)  # 将十六进制字符串转换为整数
+            byte1 = (value >> 24) & 0xFF  # 获取高8位整数
+            byte2 = (value >> 16) & 0xFF  # 获取次高8位整数
+            byte3 = (value >> 8) & 0xFF  # 获取次低8位整数
+            byte4 = value & 0xFF  # 获取低8位整数
+            data_bootloader[0][0] = byte4
+            data_bootloader[0][1] = byte3
+            data_bootloader[0][2] = byte2
+            data_bootloader[0][3] = byte1
+            crch, crcl = CRC16(data_bootloader[0], len(data_bootloader[0]) - 2)
+            data_bootloader[0][-2:] = [crcl, crch]
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C40, 8, data_fix[0][:8])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C6C, 8, data_fix[0][8:16])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C98, 6, data_fix[0][16:22])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CC4, 4, data_fix[0][22:26])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CF0, 16, data_fix[0][26:42])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0CF0 + 0x10, 2, data_fix[0][42:44])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xD1C, 14, data_fix[0][44:58])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xD48, 8, data_fix[0][58:66])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xDCC, 4, data_fix[0][66:70])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0xDF8, 2, data_fix[0][70:72])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x0C00, 6, data_chillerlink[0][:])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x1F00, 10, data_long[0][:])
+            time.sleep(0.01)
+            if a == -666:
+                return
+            a = i2c_write_data(m_hDeviceHandle, I2C_DEVICE_ADDRESS, 0x2000, 6, data_bootloader[0][:])
+            time.sleep(0.01)
+            if a == -666:
+                return
+
+            close_device(m_hDeviceHandle)
+        else:
+            msg.showinfo("Error!", "请先读取数据！")
+
+    def start(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.read_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+    def start1(self):
+        self.flag.set()
+        self.T = threading.Thread(target=self.write_function)
+        self.T.setDaemon(True)
+        self.T.start()
+
+    def update(self):
+        update_data = []
+        if data_fix[0] != []:
+            for i in range(0, 0 + 2 * 36, 2):
+                value = (data_fix[0][i + 1] << 8) | \
+                        data_fix[0][i]
+                update_data.append(value)
+            for i in range(len(self.entries)):
+                if 0 <= i <= 2 or i == 4 or i == 6 or 8 <= i <= 9 or 22 <= i <= 30 or i == 34:
+                    self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                    if update_data[i] > 32767:
+                        self.entries[i].insert(0, '-' + str((65536 - update_data[i]) // 10) + '.' + str(
+                            (65536 - update_data[i]) % 10))  # 在文本框中插入数据
+                    else:
+                        self.entries[i].insert(0, str(update_data[i] // 10) + '.' + str(
+                            update_data[i] % 10))  # 在文本框中插入数据
+                    self.entries[i].config(foreground="black")
+                elif i == 35:
+                    self.entries[i].config(state='normal')
+                    self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                    hex_value = "{:04X}".format(update_data[i])
+                    self.entries[i].insert(0, '0x' + hex_value)
+                    self.entries[i].config(foreground="black")
+                    self.entries[i].config(state='readonly')
+                else:
+                    self.entries[i].delete(0, "end")  # 清空文本框中的内容
+                    self.entries[i].insert(0, update_data[i])
+                    self.entries[i].config(foreground="black")
+        if data_chillerlink[0] != []:
+            for j in range(4):
+                for i in range(8):
+                    bit_value = (data_chillerlink[0][3 - j] >> (7 - i)) & 1
+
+                    if bit_value == 0:
+                        self.variables[i + j * 8].set(False)
+                        self.checkboxes[i + j * 8].configure(style="Black.TCheckbutton")
+                    else:
+                        self.variables[i + j * 8].set(True)
+                        self.checkboxes[i + j * 8].configure(style="Black.TCheckbutton")
+            value = (data_chillerlink[0][5] << 8) | data_chillerlink[0][4]
+            self.entries3[2].config(state='normal')
+            self.entries3[2].delete(0, "end")  # 清空文本框中的内容
+            hex_value = "{:04X}".format(value)
+            self.entries3[2].insert(0, '0x' + hex_value)
+            self.entries3[2].config(foreground="black")
+            self.entries3[2].config(state='readonly')
+
+        if data_long[0] != []:
+
+            for i in range(2):
+                value1 = (data_long[0][3 + 4 * i] << 8) | \
+                         data_long[0][2 + 4 * i]
+                value2 = (data_long[0][1 + 4 * i] << 8) | \
+                         data_long[0][0 + 4 * i]
+                value3 = (value1 << 16) | value2
+                self.entries2[i].delete(0, "end")  # 清空文本框中的内容
+                self.entries2[i].insert(0, value3)
+                self.entries2[i].config(foreground="black")
+            value = (data_long[0][9] << 8) | data_long[0][8]
+            self.entries2[2].config(state='normal')
+            self.entries2[2].delete(0, "end")  # 清空文本框中的内容
+            hex_value = "{:04X}".format(value)
+            self.entries2[2].insert(0, '0x' + hex_value)
+            self.entries2[2].config(foreground="black")
+            self.entries2[2].config(state='readonly')
+        if data_bootloader[0] != []:
+            value1 = (data_bootloader[0][3] << 8) | \
+                     data_bootloader[0][2]
+            value2 = (data_bootloader[0][1] << 8) | \
+                     data_bootloader[0][0]
+            value3 = (value1 << 16) | value2
+            self.entries3[0].delete(0, "end")  # 清空文本框中的内容
+            hex_value = "{:08X}".format(value3)
+            self.entries3[0].insert(0, '0x' + hex_value)
+            self.entries3[0].config(foreground="black")
+            value = (data_bootloader[0][5] << 8) | data_bootloader[0][4]
+            self.entries3[1].config(state='normal')
+            self.entries3[1].delete(0, "end")  # 清空文本框中的内容
+            hex_value = "{:04X}".format(value)
+            self.entries3[1].insert(0, '0x' + hex_value)
+            self.entries3[1].config(foreground="black")
+            self.entries3[1].config(state='readonly')
+
+
+
+tabs = ttk.Notebook(root)
+# 创建WRCStateTab
+Wrc_state_tab = WRCStateTab(tabs, "1")
+Alarm_History_tab = AlarmHistoryTab(tabs, "1")
+Left_tab = LeftTab(tabs, "1")
+tabs.add(Wrc_state_tab, text='组线控器配置数据')
+tabs.add(Alarm_History_tab, text='故障历史信息')
+tabs.add(Left_tab, text='固化参数+连接确认信息+永久参数+Bootloader')
+tabs.pack(fill='both', expand=True)
+
+
+# Define the function to open the device
+def open_device():
+    rsStatus = ctypes.c_int(0)
+    m_hDeviceHandle = usb61api.usb61_open(ctypes.byref(rsStatus))
+    if rsStatus.value != 0:
+        msg.showinfo("Error!", "Failed to open device. Error code:" + str(rsStatus.value))
+        return
+
+    configure_device(m_hDeviceHandle, RS_PWRCTRL_ON | RS_OUTPUT_3_3V, RS_DEVMODE_I2C | RS_DEVMODE_MASTER,
+                     RS_INTERVAL_NONE, RS_I2C_PULLUP_ENABLE, RS_I2C_FREQ_1MHZ)
+    return m_hDeviceHandle
+
+
+# Define the function to configure the device
+def configure_device(m_hDeviceHandle, power_control_value, mode_change_value, interval_value, pullup_value,
+                     frequency_value):
+    rsStatus = usb61api.usb61_power_control(m_hDeviceHandle, power_control_value)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to control device power. Error code:" + str(rsStatus))
+        return
+
+    rsStatus = usb61api.usb61_mode_change(m_hDeviceHandle, mode_change_value, None)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to change device mode. Error code:" + str(rsStatus))
+        return
+
+    rsStatus = usb61api.usb61_set_interval(m_hDeviceHandle, interval_value)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to set interval. Error code:" + str(rsStatus))
+        return
+
+    rsStatus = usb61api.usb61_i2c_pullup(m_hDeviceHandle, pullup_value)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to set I2C pull-up. Error code:" + str(rsStatus))
+        return
+
+    rsStatus = usb61api.usb61_i2c_set_freq(m_hDeviceHandle, frequency_value)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to set I2C frequency. Error code:" + str(rsStatus))
+        return
+
+    return m_hDeviceHandle
+
+
+# Define the function to write data to the EEPROM
+def i2c_write_data(m_hDeviceHandle, device_address, write_address, buffer_size, buffer):
+    write_buffer_size = buffer_size + 2  # 增加2个字节来存储 write_address 和 buffer
+    write_buffer = (ctypes.c_ubyte * write_buffer_size)()
+    write_buffer[0] = write_address >> 8  # 存储 write_address 的高位字节
+    write_buffer[1] = write_address & 0xFF  # 存储 write_address 的低位字节
+    write_buffer[2:] = buffer  # 将 buffer 的每个元素复制到 write_buffer 的适当位置
+    rsStatus = usb61api.usb61_i2c_write_master(m_hDeviceHandle, device_address, RS_I2C_FLAG_STOP, write_buffer_size,
+                                               write_buffer)
+
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to write data to EEPROM. Error code:" + str(rsStatus))
+        return -666
+
+    return 0
+
+
+# Define the function to read data from the EEPROM
+def i2c_read_data(m_hDeviceHandle, device_address, read_address, read_length):
+    buffer = (ctypes.c_ubyte * read_length)()
+
+    rsStatus = usb61api.usb61_i2c_read_master_ex(m_hDeviceHandle, device_address, read_address, RS_I2C_FLAG_2BYTE_SA,
+                                                 read_length,
+                                                 buffer)
+
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to read data from EEPROM. Error code:" + str(rsStatus))
+        return -666
+
+    return buffer  # Exclude the first byte (read address)
+
+
+# Define the function to close the device
+def close_device(m_hDeviceHandle):
+    rsStatus = usb61api.usb61_close(m_hDeviceHandle)
+    if rsStatus != 0:
+        msg.showinfo("Error!", "Failed to close device. Error code:" + str(rsStatus))
+        return
+
+
+def convert_to_hex(text):
+    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+        num = int(text)
+        if num < 0:
+            num += 65536
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '.' in text:
+        num = float(text)
+
+        if num < 0:
+            num = int(num * 10)
+            num += 65536
+        else:
+            num = int(num * 10)
+        hex_num = hex(num)[2:].zfill(4)
+        high = int(hex_num[:2], 16)
+        low = int(hex_num[2:], 16)
+        return high, low
+    elif '0x' in text:
+        num = int(text, 16)
+        hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+        high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+        low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+        return high, low
+    else:
+        high = 0
+        low = 0
+        return high, low
+
+
+def convert_to_hex1(text):
+    if text.isdigit() or (text.startswith('-') and text[1:].isdigit()):
+        num = int(text)
+        if num < 0:
+            num += 256
+        return num
+    elif '.' in text:
+        num = float(text)
+
+        if num < 0:
+            num = int(num * 10)
+            num += 256
+        else:
+            num = int(num * 10)
+
+        return num
+
+    else:
+        return 0
+
+
+def CRC16(pu8Msg, u16Len):
+    u16Sum = 0xFFFF
+    for i16Tmp1 in range(u16Len):
+        u16Sum ^= pu8Msg[i16Tmp1]
+        for i16Tmp2 in range(8):
+            if u16Sum & 0x0001:
+                u16Sum = u16Sum >> 1
+                u16Sum ^= 0xA001
+            else:
+                u16Sum = u16Sum >> 1
+    return (u16Sum >> 8), (u16Sum & 0xFF)
+
+
+root.mainloop()

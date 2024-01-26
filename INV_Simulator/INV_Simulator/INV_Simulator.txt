@@ -1,0 +1,1831 @@
+import time
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox as msg, scrolledtext
+from tkinter import *
+from tkinter.ttk import Combobox
+import threading
+import serial.tools.list_ports
+from serial import PARITY_ODD, PARITY_EVEN
+import datetime
+from PIL import ImageTk, Image
+import os
+import gc
+
+ports_list = list(serial.tools.list_ports.comports())
+# 设置下拉框的值
+select_P = {''}
+for i in range(len(ports_list)):
+    select_P.add(str(ports_list[i]))
+select_E = {"9600", "2400"}
+select_D = {"8"}
+select_A = {"NONE"}
+select_S = {"1"}
+data_register1 = []
+data_register2 = []
+data_register3 = []
+T = None
+flag = threading.Event()
+ser_a = None
+T1 = None
+flag1 = threading.Event()
+for i in range(7):
+    data_register1.append([])
+    data_register2.append([])
+    data_register3.append([])
+root = tk.Tk()
+root.title("INV_Simulator Ver1.2")
+root.geometry("1300x1040")
+root.resizable(False, False)
+icon_path = "logo.ico"
+style = ttk.Style()
+# 创建一个样式，命名为Bold.TButton
+style.configure('Bold.TButton', font=('TkDefaultFont', 12, 'bold'))
+if os.path.exists(icon_path):
+    root.iconbitmap(icon_path)
+
+
+class CompressorTab(ttk.Frame):
+    def __init__(self, master, compressor_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.compressor_name = compressor_name
+        self.ser_lock = threading.Lock()
+        self.flag1 = threading.Event()
+        self.count = 0
+        self.useless = 0
+        self.register1 = []
+        self.register2 = []
+        self.register3 = []
+        for i in range(16):
+            self.register1.append([])
+            self.register2.append([])
+            self.register3.append([])
+        self.ser_a = None
+        # 创建LabelFrame1
+        style = ttk.Style()
+        style.configure('Custom.TLabelframe', font=('宋体', 10, 'bold'), borderwidth=2)
+        self.label_frame1 = ttk.LabelFrame(self, text="寄存器（起始地址：1000）", style='Custom.TLabelframe')
+        self.label_frame1.pack(padx=10, pady=5, anchor="nw")
+
+        # 创建存储Entry的数组
+        self.register1_entries = []
+        for i in range(16):
+            self.register1_entries.append([])
+            self.register1_entries[i] = ttk.Entry(self.label_frame1, width=10)
+            self.register1_entries[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=5, pady=1)
+            self.register1_entries[i].bind('<Return>', lambda event: self.set_data())
+
+        self.register1_entries[2].insert(0, '0x0000')
+        self.register1_entries[2].config(state='disabled')
+        self.register1_entries[0].config(state='readonly')
+        self.register1_entries[1].config(state='readonly')
+        self.register1_entries[3].config(state='readonly')
+        self.register1_entries[4].config(state='readonly')
+        for i in range(11):
+            self.register1_entries[5 + i].insert(0, '0x0000')
+            self.register1_entries[5 + i].config(state='disabled')
+        # 创建存储Label的数组
+        self.label_register1 = []
+        for i in range(16):
+            self.label_register1.append([])
+            self.label_register1[i] = ttk.Label(self.label_frame1, text="保留")
+            self.label_register1[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=1)
+
+        self.label_register1[0].config(text='输出机械' + '\n' + '频率/Hz', font=('宋体', 10))
+        self.label_register1[1].config(text='命令字', font=('宋体', 10))
+        self.label_register1[3].config(text='电机型号', font=('宋体', 10))
+        self.label_register1[4].config(text='升/降速' + '\n' + '频率/Hz', font=('宋体', 10))
+
+        # 创建LabelFrame2
+        self.label_frame2 = ttk.LabelFrame(self, text="寄存器（起始地址：1100）", style='Custom.TLabelframe')
+        self.label_frame2.pack(padx=10, pady=5, anchor="nw")
+        self.label_frame_state = ttk.LabelFrame(self.label_frame2, text="状态字(State)", style='Custom.TLabelframe')
+        self.label_frame_state.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_break1 = ttk.LabelFrame(self.label_frame2, text="故障字1", style='Custom.TLabelframe')
+        self.label_frame_break1.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_break2 = ttk.LabelFrame(self.label_frame2, text="故障字2", style='Custom.TLabelframe')
+        self.label_frame_break2.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_sw = ttk.LabelFrame(self.label_frame2, text="开关状态", style='Custom.TLabelframe')
+        self.label_frame_sw.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_left = ttk.LabelFrame(self.label_frame2, text="剩余部分", style='Custom.TLabelframe')
+        self.label_frame_left.pack(padx=5, pady=0, anchor="nw")
+
+        # 创建存储Entry的数组
+        self.register2_entries = []
+        self.register2_entries_state = []
+        self.register2_entries_break1 = []
+        self.register2_entries_break2 = []
+        self.register2_entries_sw = []
+        self.register2_entries_left = []
+        self.register2_buttons_state = []
+        self.register2_buttons_break1 = []
+        self.register2_buttons_break2 = []
+        self.register2_buttons_sw = []
+        for i in range(16):
+            self.register2_buttons_state.append([])
+            self.register2_buttons_state[i] = tk.Button(self.label_frame_state, text="Bit{}".format(15 - i),
+                                                        relief="raised", width=9)
+            self.register2_buttons_state[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            self.register2_buttons_state[i].bind('<Return>', lambda event: self.set_data())
+            toggle_func = self.create_toggle_func(self.register2_buttons_state[i])
+            self.register2_buttons_state[i].config(command=toggle_func)
+        self.register2_buttons_state[0].config(bg='grey')
+        self.register2_buttons_state[1].config(bg='grey')
+        self.register2_buttons_state[7].config(bg='grey')
+        for i in range(5):
+            self.register2_buttons_state[9 + i].config(bg='grey')
+        self.register2_buttons_state[15].config(bg='grey')
+
+        self.label_state = []
+        for i in range(16):
+            self.label_state.append([])
+            self.label_state[i] = ttk.Label(self.label_frame_state, text="保留")
+            self.label_state[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+        self.label_state[0].config(text='上升禁止', font=('宋体', 10))
+        self.label_state[1].config(text='电源电压' + '\n' + '不平衡', font=('宋体', 10))
+        self.label_state[7].config(text='预充电' + '\n' + '完成状态', font=('宋体', 10))
+        self.label_state[9].config(text='降频状态', font=('宋体', 10))
+        self.label_state[10].config(text='升频状态', font=('宋体', 10))
+        self.label_state[11].config(text='频率稳定', font=('宋体', 10))
+        self.label_state[12].config(text='过载降频', font=('宋体', 10))
+        self.label_state[13].config(text='故障状态', font=('宋体', 10))
+        self.label_state[15].config(text='运行状态', font=('宋体', 10))
+
+        for i in range(16):
+            self.register2_buttons_break1.append([])
+            self.register2_buttons_break1[i] = tk.Button(self.label_frame_break1, text="Bit{}".format(15 - i),
+                                                         relief="raised", width=9, height=1)
+            self.register2_buttons_break1[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+
+            toggle_func = self.create_toggle_func(self.register2_buttons_break1[i])
+            self.register2_buttons_break1[i].config(command=toggle_func)
+        self.register2_buttons_break1[1].config(bg='grey')
+        self.register2_buttons_break1[4].config(bg='grey')
+        for i in range(9):
+            self.register2_buttons_break1[7 + i].config(bg='grey')
+
+        self.label_break1 = []
+        for i in range(16):
+            self.label_break1.append([])
+            self.label_break1[i] = ttk.Label(self.label_frame_break1, text="保留")
+            self.label_break1[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+        self.label_break1[1].config(text='压力排气' + '\n' + '高故障', font=('宋体', 10))
+        self.label_break1[4].config(text='ISPM' + '\n' + '设定错误', font=('宋体', 10))
+        self.label_break1[7].config(text='欠电压', font=('宋体', 10))
+        self.label_break1[8].config(text='过电压', font=('宋体', 10))
+        self.label_break1[9].config(text='预充电' + '\n' + '故障', font=('宋体', 10))
+        self.label_break1[10].config(text='过温', font=('宋体', 10))
+        self.label_break1[11].config(text='电流传感' + '\n' + '器故障', font=('宋体', 10))
+        self.label_break1[12].config(text='电源输入' + '\n' + '异常', font=('宋体', 10))
+        self.label_break1[13].config(text='MCU' + '\n' + '复位', font=('宋体', 10))
+        self.label_break1[14].config(text='转速异常', font=('宋体', 10))
+        self.label_break1[15].config(text='过流与' + '\n' + '过载', font=('宋体', 10))
+
+        for i in range(16):
+            self.register2_buttons_break2.append([])
+            self.register2_buttons_break2[i] = tk.Button(self.label_frame_break2, text="Bit{}".format(15 - i),
+                                                         relief="raised", width=9, height=1)
+            self.register2_buttons_break2[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+
+            toggle_func = self.create_toggle_func(self.register2_buttons_break2[i])
+            self.register2_buttons_break2[i].config(command=toggle_func)
+        for i in range(5):
+            self.register2_buttons_break2[0 + i].config(bg='grey')
+        for i in range(4):
+            self.register2_buttons_break2[7 + i].config(bg='grey')
+        for i in range(4):
+            self.register2_buttons_break2[12 + i].config(bg='grey')
+
+        self.label_break2 = []
+        for i in range(16):
+            self.label_break2.append([])
+            self.label_break2[i] = ttk.Label(self.label_frame_break2, text="保留")
+            self.label_break2[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+
+        self.label_break2[0].config(text='输入缺相', font=('宋体', 10))
+        self.label_break2[1].config(text='电源输入' + '\n' + '瞬时跌落', font=('宋体', 10))
+        self.label_break2[2].config(text='63H' + '\n' + '提前复位', font=('宋体', 10))
+        self.label_break2[3].config(text='63H' + '\n' + '电路异常', font=('宋体', 10))
+        self.label_break2[4].config(text='63H', font=('宋体', 10))
+        self.label_break2[7].config(text='继电器' + '\n' + '未闭合', font=('宋体', 10))
+        self.label_break2[8].config(text='预充电' + '\n' + '失败', font=('宋体', 10))
+        self.label_break2[9].config(text='转速指令' + '\n' + '错误', font=('宋体', 10))
+        self.label_break2[10].config(text='脱调检出', font=('宋体', 10))
+        self.label_break2[12].config(text='对地短路', font=('宋体', 10))
+        self.label_break2[13].config(text='IPM' + '\n' + 'Error', font=('宋体', 10))
+        self.label_break2[14].config(text='功率模块' + '\n' + '发热', font=('宋体', 10))
+        self.label_break2[15].config(text='顺时过流', font=('宋体', 10))
+
+        self.label_sw = []
+        for i in range(8):
+            self.register2_buttons_sw.append([])
+            self.register2_buttons_sw[i] = tk.Button(self.label_frame_sw, text="Bit{}".format(7 - i),
+                                                     relief="raised", width=9, height=1)
+            self.register2_buttons_sw[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            toggle_func = self.create_toggle_func(self.register2_buttons_sw[i])
+            self.register2_buttons_sw[i].config(command=toggle_func)
+        for i in range(8):
+            self.register2_buttons_sw[i].config(bg='grey')
+
+        for i in range(8):
+            self.label_sw.append([])
+            self.label_sw[i] = ttk.Label(self.label_frame_sw, text="SW%d" % (i + 1))
+            self.label_sw[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+
+        for i in range(12):
+            self.register2_entries_left.append([])
+            self.register2_entries_left[i] = ttk.Entry(self.label_frame_left, width=10)
+            self.register2_entries_left[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            self.register2_entries_left[i].bind('<Return>', lambda event: self.set_data())
+
+        self.register2_entries_left[0].insert(0, '0x0000')
+        self.register2_entries_left[2].insert(0, '130.0')
+        self.register2_entries_left[3].insert(0, '0x0000')
+        self.register2_entries_left[3].config(state='disabled')
+        self.register2_entries_left[4].insert(0, '0.00')
+        self.register2_entries_left[5].insert(0, '0x0000')
+        self.register2_entries_left[5].config(state='disabled')
+        self.register2_entries_left[6].insert(0, '0.00')
+        self.register2_entries_left[7].insert(0, '538')
+        self.register2_entries_left[8].insert(0, '50.0')
+        self.register2_entries_left[9].insert(0, '0x0000')
+        self.register2_entries_left[9].config(state='disabled')
+        self.register2_entries_left[10].insert(0, '0x0000')
+        self.register2_entries_left[10].config(state='disabled')
+        self.register2_entries_left[10].insert(0, '0')
+
+        self.label_left = []
+        for i in range(12):
+            self.label_left.append([])
+            self.label_left[i] = ttk.Label(self.label_frame_left, text="保留")
+            self.label_left[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+
+        self.label_left[0].config(text='报警字', font=('宋体', 10))
+        self.label_left[1].config(text='输出机械' + '\n' + '频率/Hz', font=('宋体', 10))
+        self.label_left[2].config(text='允许最大' + '\n' + '频率/Hz', font=('宋体', 10))
+        self.label_left[4].config(text='交流输入' + '\n' + '电流值/A', font=('宋体', 10))
+        self.label_left[6].config(text='电流值/A', font=('宋体', 10))
+        self.label_left[7].config(text='直流母线' + '\n' + '电压值/V', font=('宋体', 10))
+        self.label_left[8].config(text='PIM温度/℃', font=('宋体', 10))
+        self.label_left[11].config(text='累计运行' + '\n' + '时间/H', font=('宋体', 10))
+
+        # 创建LabelFrame3
+        self.label_frame3 = ttk.LabelFrame(self, text="寄存器（起始地址：2000）", style='Custom.TLabelframe')
+        self.label_frame3.pack(padx=10, pady=5, anchor="nw")
+
+        # 创建存储Entry的数组
+        self.register3_entries = []
+        for i in range(16):
+            self.register3_entries.append([])
+            self.register3_entries[i] = ttk.Entry(self.label_frame3, width=10)
+            self.register3_entries[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=5, pady=1)
+            self.register3_entries[i].bind('<Return>', lambda event: self.set_data())
+
+        self.register3_entries[0].insert(0, '0')
+        self.register3_entries[1].insert(0, '0x0000')
+        self.register3_entries[1].config(state='disabled')
+        self.register3_entries[2].insert(0, '15.0')
+        self.register3_entries[13].insert(0, '0x9002')
+        self.register3_entries[13].config(state='disabled')
+        for i in range(7):
+            self.register3_entries[3 + i].insert(0, '0x0000')
+            self.register3_entries[3 + i].config(state='disabled')
+        for i in range(2):
+            self.register3_entries[14 + i].insert(0, '0x0000')
+            self.register3_entries[14 + i].config(state='disabled')
+        # 创建存储Label的数组
+        self.label_register3 = []
+        for i in range(16):
+            self.label_register3.append([])
+            self.label_register3[i] = ttk.Label(self.label_frame3, text="保留")
+            self.label_register3[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=1)
+        self.label_register3[0].config(text='输出功率/W', font=('宋体', 10))
+        self.label_register3[2].config(text='允许最小' + '\n' + '频率/Hz', font=('宋体', 10))
+        self.label_register3[10].config(text='MCU' + '\n' + 'Flash', font=('宋体', 10))
+        self.label_register3[11].config(text='EEPROM' + '\n' + 'CkSum', font=('宋体', 10))
+        self.label_register3[12].config(text='电机型号', font=('宋体', 10))
+        self.label_register3[13].config(text='软件版本', font=('宋体', 10))
+
+        self.start1()
+        self.set_data()
+        self.count = 1
+
+    def freq_setp(self, text_target, text_base, text_step):
+        if text_target.startswith('-'):
+            text_target = text_target[1:]  # 去掉负号
+            if text_target.isdigit():
+                num_target = int(text_target)
+                num_target = int(0 - num_target * 10)
+            elif '.' in text_target:
+                num_target = float(text_target)
+                num_target = int(0 - num_target * 10)
+        elif text_target.isdigit():
+            num_target = int(text_target)
+            num_target = int(num_target * 10)
+        elif '.' in text_target:
+            num_target = float(text_target)
+            num_target = int(num_target * 10)
+        else:
+            num_target = 0
+
+        if text_base.startswith('-'):
+            text_base = text_base[1:]  # 去掉负号
+            if text_base.isdigit():
+                num_base = int(text_base)
+                num_base = int(0 - num_base * 10)
+            elif '.' in text_base:
+                num_base = float(text_base)
+                num_base = int(0 - num_base * 10)
+        elif text_base.isdigit():
+            num_base = int(text_base)
+            num_base = int(num_base * 10)
+        elif '.' in text_base:
+            num_base = float(text_base)
+            num_base = int(num_base * 10)
+        else:
+            num_base = 0
+
+        if text_step.startswith('-'):
+            text_step = text_step[1:]  # 去掉负号
+            if text_step.isdigit():
+                num_step = int(text_step)
+                num_step = int(0 - num_step * 10)
+            elif '.' in text_step:
+                num_step = float(text_step)
+                num_step = int(0 - num_step * 10)
+        elif text_step.isdigit():
+            num_step = int(text_step)
+            num_step = int(num_step * 10)
+        elif '.' in text_step:
+            num_step = float(text_step)
+            num_step = int(num_step * 10)
+        else:
+            num_step = 0
+
+        if num_target > num_base:
+            if num_target > (num_base + num_step):
+                num_base = num_base + num_step
+            else:
+                num_base = num_target
+        elif num_target < num_base:
+            if num_target < (num_base - num_step):
+                num_base = num_base - num_step
+            else:
+                num_base = num_target
+        return num_base
+
+    def hexstring_to_hex(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = int(text)
+                hex_num = hex(0 - num)[2:].zfill(4)
+                high = int(hex_num[:2], 16)
+                low = int(hex_num[2:], 16)
+                return high, low
+            elif '.' in text:
+                num = float(text)  # 将输入的文本转换为浮点数
+                num = int(0 - num * 10)
+                hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+                high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+                low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+                return high, low
+            else:
+                high = 0
+                low = 0
+                return high, low
+        else:
+            if text.startswith('0x') or text.startswith('0X'):
+                if len(text) == 2:
+                    high = 0
+                    low = 0
+                    return high, low
+                else:
+                    num = int(text, 16)
+                    hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+                    high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+                    low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+                    return high, low
+            elif text.isdigit():  # 检查输入的是否为数字
+                num = int(text)  # 将输入的文本转换为整数
+                hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+                high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+                low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+                return high, low
+            elif '.' in text:
+                num = float(text)  # 将输入的文本转换为浮点数
+                num = int(num * 10)
+                hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+                high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+                low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+                return high, low
+            else:
+                high = 0
+                low = 0
+                return high, low
+
+    def convert_to_hex(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = int(text)
+                hex_num = hex(num)[2:].zfill(4)
+                high = int(hex_num[:2], 16)
+                low = int(hex_num[2:], 16)
+                return high, low
+        elif text.isdigit():  # 检查输入的是否为数字
+            num = int(text)  # 将输入的文本转换为整数
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        elif '.' in text:
+            num = float(text)  # 将输入的文本转换为浮点数
+            num = int(num * 10)
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        else:
+            high = 0
+            low = 0
+            return high, low
+
+    def convert_to_hex1(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = int(text)
+                hex_num = hex(num)[2:].zfill(4)
+                high = int(hex_num[:2], 16)
+                low = int(hex_num[2:], 16)
+                return high, low
+        elif text.isdigit():  # 检查输入的是否为数字
+            num = int(text)  # 将输入的文本转换为整数
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        elif '.' in text:
+            num = float(text)  # 将输入的文本转换为浮点数
+            num = int(num * 100)
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        else:
+            high = 0
+            low = 0
+            return high, low
+
+    def convert_to_hex2(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = 55 - int(text)
+                if num < 0:
+                    high = 0
+                    low = 0
+                    return high, low
+                else:
+                    hex_num = hex(num)[2:].zfill(4)
+                    high = int(hex_num[:2], 16)
+                    low = int(hex_num[2:], 16)
+                    return high, low
+            elif '.' in text:
+                num = float(text)
+                num = 550 - int(num * 10)
+                if num < 0:
+                    high = 0
+                    low = 0
+                    return high, low
+                else:
+                    hex_num = hex(num)[2:].zfill(4)
+                    high = int(hex_num[:2], 16)
+                    low = int(hex_num[2:], 16)
+                    return high, low
+        elif text.isdigit():  # 检查输入的是否为数字
+            num = int(text) + 55  # 将输入的文本转换为整数
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        elif '.' in text:
+            num = float(text)  # 将输入的文本转换为浮点数
+            num = int(num * 10) + 550
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        else:
+            high = 0
+            low = 0
+            return high, low
+
+    def create_toggle_func(self, btn):
+        def toggle():
+            if btn.config('relief')[-1] == 'raised':
+                btn.config(relief="sunken", bg="red")
+                self.set_data1()
+            else:
+                btn.config(relief="raised", bg="grey")
+                self.set_data1()
+
+        return toggle
+
+    def start1(self):
+        self.flag1.set()
+        self.T1 = threading.Thread(target=self.compressor)
+        self.T1.setDaemon(True)
+        self.T1.start()
+
+    def compressor(self):
+        update_data = []
+        precharge_raised = 0
+        while True:
+            time.sleep(1)
+            try:
+                if (self.register1_entries[1].get() == '0x0002' or self.register1_entries[1].get() == '0x0000' or
+                        self.register1_entries[1].get() == ''):
+                    if (self.register1_entries[1].get() == '0x0002'):
+                        if (precharge_raised == 0):
+                            self.register2_buttons_state[7].configure(relief='sunken')
+                            self.register2_buttons_state[7].configure(bg='red')
+                            precharge_raised = 1
+                    else:
+                        precharge_raised = 0
+                        self.register2_buttons_state[7].configure(relief='raised')
+                        self.register2_buttons_state[7].configure(bg='grey')
+                    data1 = ''
+                    for i in range(len(self.register2_buttons_state)):
+                        temp = '0' if self.register2_buttons_state[i].config('relief')[-1] == 'raised' else '1'
+                        data1 += temp
+                    decimal_value = int(data1, 2)
+                    hex_string = hex(decimal_value)
+                    high, low = self.hexstring_to_hex(hex_string)
+                    data_register2[int(self.compressor_name) - 1][3] = high
+                    data_register2[int(self.compressor_name) - 1][4] = low
+
+                    self.register2_entries_left[1].delete(0, 'end')  # 清除文本框中的内容
+                    self.register2_entries_left[1].insert(0, '0.0')  # 插入新的数值
+                    if len(data_register2[int(self.compressor_name) - 1]) > 15:
+                        data_register2[int(self.compressor_name) - 1][13] = 0
+                        data_register2[int(self.compressor_name) - 1][14] = 0
+                        crch, crcl = self.CRC16(data_register2[int(self.compressor_name) - 1],
+                                                len(data_register2[int(self.compressor_name) - 1]) - 2)
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 2] = crcl
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 1] = crch
+                elif (self.register1_entries[1].get() == '0x0003'):
+                    if (precharge_raised == 0):
+                        self.register2_buttons_state[7].configure(relief='sunken')
+                        self.register2_buttons_state[7].configure(bg='red')
+                        precharge_raised = 1
+                    freq_out = self.freq_setp(self.register1_entries[0].get(), self.register2_entries_left[1].get(),
+                                              self.register1_entries[4].get())
+                    freq_out = freq_out / 10.0
+                    self.register2_entries_left[1].delete(0, 'end')  # 清除文本框中的内容
+                    self.register2_entries_left[1].insert(0, str(round(freq_out, 1)))  # 插入新的数值
+                    if len(data_register2[int(self.compressor_name) - 1]) > 15:
+                        high, low = self.convert_to_hex(self.register2_entries_left[1].get())
+                        data_register2[int(self.compressor_name) - 1][13] = int(high)
+                        data_register2[int(self.compressor_name) - 1][14] = int(low)
+                        crch, crcl = self.CRC16(data_register2[int(self.compressor_name) - 1],
+                                                len(data_register2[int(self.compressor_name) - 1]) - 2)
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 2] = crcl
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 1] = crch
+                if len(data_register1[int(self.compressor_name) - 1]) > 0:
+                    for i in range(7, 7 + 2 * 5, 2):
+                        temp = (data_register1[int(self.compressor_name) - 1][i] << 8) | \
+                               data_register1[int(self.compressor_name) - 1][i + 1]
+                        update_data.append(temp)
+                    if (len(update_data)) == 5:
+                        for i in range(len(update_data)):
+
+                            if i == 1 or i == 3:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                hex_value = hex(update_data[i])  # 将整数转换为十六进制字符串
+                                hex_value = hex_value[2:]  # 去掉开头的 '0x'
+                                hex_value = hex_value.zfill(4)  # 用 '0' 左侧填充至两位
+                                self.register1_entries[i].insert(0, "0x" + str(hex_value))  # 在文本框中插入数据
+                                self.register1_entries[i].config(state='readonly')
+                            elif i == 2:
+                                continue
+                            else:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                self.register1_entries[i].insert(0, str(update_data[i] // 10) + '.' + str(
+                                    update_data[i] % 10))  # 在文本框中插入数据
+                                self.register1_entries[i].config(state='readonly')
+
+                        update_data = []
+            except Exception as e:
+                msg.showinfo(self.compressor_name, e)
+
+    def set_data(self):
+        register_data = [int(self.compressor_name), 3, 32]
+        data1 = ''
+        for i in range(len(self.register2_buttons_state)):
+            temp = '0' if self.register2_buttons_state[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break1)):
+            temp = '0' if self.register2_buttons_break1[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break2)):
+            temp = '0' if self.register2_buttons_break2[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        high, low = self.hexstring_to_hex(self.register2_entries_left[0].get())
+        # decimal_value = int(self.register2_entries_left[0].get(), 0)
+        # hex_string = hex(decimal_value)[2:].zfill(4)
+        # high = hex_string[:2]
+        # low = hex_string[2:]
+        register_data.append(int(high))
+        register_data.append(int(low))
+        for i in range(8):
+            temp = '0' if self.register2_buttons_sw[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        data1 = "00000000" + data1
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+
+        for i in range(len(self.register2_entries_left)):
+            if i == 0:
+                continue
+            elif i == 8:
+                high, low = self.convert_to_hex2(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            elif i == 4 or i == 6:
+                high, low = self.convert_to_hex1(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register2[int(self.compressor_name) - 1] = register_data.copy()
+        register_data = [int(self.compressor_name), 3, 32]
+        for i in range(len(self.register3_entries)):
+            if i == 13:
+                high, low = self.hexstring_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register3[int(self.compressor_name) - 1] = register_data.copy()
+        if self.count == 1:
+            msg.showinfo("Successfully", str(int(self.compressor_name) // 2) + "号压机保存成功！")
+
+    def set_data1(self):
+        register_data = [int(self.compressor_name), 3, 32]
+        data1 = ''
+        for i in range(len(self.register2_buttons_state)):
+            temp = '0' if self.register2_buttons_state[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break1)):
+            temp = '0' if self.register2_buttons_break1[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break2)):
+            temp = '0' if self.register2_buttons_break2[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        high, low = self.hexstring_to_hex(self.register2_entries_left[0].get())
+        # decimal_value = int(self.register2_entries_left[0].get(), 0)
+        # hex_string = hex(decimal_value)[2:].zfill(4)
+        # high = hex_string[:2]
+        # low = hex_string[2:]
+        register_data.append(int(high))
+        register_data.append(int(low))
+        for i in range(8):
+            temp = '0' if self.register2_buttons_sw[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        data1 = "00000000" + data1
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_entries_left)):
+            if i == 0:
+                continue
+            elif i == 8:
+                high, low = self.convert_to_hex2(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            elif i == 4 or i == 6:
+                high, low = self.convert_to_hex1(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register2[int(self.compressor_name) - 1] = register_data.copy()
+        register_data = [int(self.compressor_name), 3, 32]
+        for i in range(len(self.register3_entries)):
+            if i == 13:
+                high, low = self.hexstring_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register3[int(self.compressor_name) - 1] = register_data.copy()
+
+    def CRC16(self, pu8Msg, u16Len):
+        u16Sum = 0xFFFF
+        for i16Tmp1 in range(u16Len):
+            u16Sum ^= pu8Msg[i16Tmp1]
+            for i16Tmp2 in range(8):
+                if u16Sum & 0x0001:
+                    u16Sum = u16Sum >> 1
+                    u16Sum ^= 0xA001
+                else:
+                    u16Sum = u16Sum >> 1
+        return (u16Sum >> 8), (u16Sum & 0xFF)
+
+
+class Compressor1Tab(ttk.Frame):
+    def __init__(self, master, compressor_name):  # 选项卡UI设置
+        super().__init__(master)
+        self.compressor_name = compressor_name
+        self.flag1 = threading.Event()
+        self.count = 0
+        self.useless = 0
+        self.register1 = []
+        self.register2 = []
+        self.register3 = []
+        for i in range(16):
+            self.register1.append([])
+            self.register2.append([])
+            self.register3.append([])
+        self.ser_a = None
+        # 创建LabelFrame1
+        style = ttk.Style()
+        style.configure('Custom.TLabelframe', font=('宋体', 10, 'bold'), borderwidth=2)
+        self.label_frame1 = ttk.LabelFrame(self, text="寄存器（起始地址：1000）", style='Custom.TLabelframe')
+        self.label_frame1.pack(padx=10, pady=5, anchor="nw")
+        # 创建存储Entry的数组
+        self.register1_entries = []
+        for i in range(16):
+            self.register1_entries.append([])
+            self.register1_entries[i] = ttk.Entry(self.label_frame1, width=10)
+            self.register1_entries[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=5, pady=1)
+            self.register1_entries[i].bind('<Return>', lambda event: self.set_data())
+        for i in range(8):
+            self.register1_entries[8 + i].insert(0, '0x0000')
+            self.register1_entries[8 + i].config(state='disabled')
+            self.register1_entries[i].config(state='readonly')
+        # 创建存储Label的数组
+        self.label_register1 = []
+        for i in range(16):
+            self.label_register1.append([])
+            self.label_register1[i] = ttk.Label(self.label_frame1, text="保留")
+            self.label_register1[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=1)
+
+        self.label_register1[0].config(text='输出机械' + '\n' + '频率/rpm', font=('宋体', 10))
+        self.label_register1[1].config(text='命令字', font=('宋体', 10))
+        self.label_register1[2].config(text='工作模式', font=('宋体', 10))
+        self.label_register1[3].config(text='电机型号', font=('宋体', 10))
+        self.label_register1[4].config(text='升速频率' + '\n' + '设置/rpm', font=('宋体', 10))
+        self.label_register1[5].config(text='降速频率' + '\n' + '频率/rpm', font=('宋体', 10))
+        self.label_register1[6].config(text='控制器类', font=('宋体', 10))
+        self.label_register1[7].config(text='输入电流', font=('宋体', 10))
+        # 创建LabelFrame2
+        self.label_frame2 = ttk.LabelFrame(self, text="寄存器（起始地址：1100）", style='Custom.TLabelframe')
+        self.label_frame2.pack(padx=10, pady=5, anchor="nw")
+        self.label_frame_state = ttk.LabelFrame(self.label_frame2, text="状态字(State)", style='Custom.TLabelframe')
+        self.label_frame_state.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_break1 = ttk.LabelFrame(self.label_frame2, text="故障字1", style='Custom.TLabelframe')
+        self.label_frame_break1.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_break2 = ttk.LabelFrame(self.label_frame2, text="故障字2", style='Custom.TLabelframe')
+        self.label_frame_break2.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_sw = ttk.LabelFrame(self.label_frame2, text="开关状态", style='Custom.TLabelframe')
+        self.label_frame_sw.pack(padx=5, pady=0, anchor="nw")
+        self.label_frame_left = ttk.LabelFrame(self.label_frame2, text="剩余部分", style='Custom.TLabelframe')
+        self.label_frame_left.pack(padx=5, pady=0, anchor="nw")
+
+        # 创建存储Entry的数组
+        self.register2_entries = []
+        self.register2_entries_state = []
+        self.register2_entries_break1 = []
+        self.register2_entries_break2 = []
+        self.register2_entries_sw = []
+        self.register2_entries_left = []
+        self.register2_buttons_state = []
+        self.register2_buttons_break1 = []
+        self.register2_buttons_break2 = []
+        self.register2_buttons_sw = []
+        for i in range(16):
+            self.register2_buttons_state.append([])
+            self.register2_buttons_state[i] = tk.Button(self.label_frame_state, text="Bit{}".format(15 - i),
+                                                        relief="raised", width=9, height=1)
+            self.register2_buttons_state[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            toggle_func = self.create_toggle_func(self.register2_buttons_state[i])
+            self.register2_buttons_state[i].config(command=toggle_func)
+
+        for i in range(12):
+            self.register2_buttons_state[4 + i].config(bg='grey')
+
+        self.label_state = []
+        for i in range(16):
+            self.label_state.append([])
+            self.label_state[i] = ttk.Label(self.label_frame_state, text="保留")
+            self.label_state[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+        self.label_state[4].config(text='FCT' + '\n' + '运行状态', font=('宋体', 10))
+        self.label_state[5].config(text='预加热' + '\n' + '工作状态', font=('宋体', 10))
+        self.label_state[6].config(text='放电' + '\n' + '完成状态', font=('宋体', 10))
+        self.label_state[7].config(text='预充电' + '\n' + '完成状态', font=('宋体', 10))
+        self.label_state[8].config(text='弱磁' + '\n' + '工作状态', font=('宋体', 10))
+        self.label_state[9].config(text='降频状态', font=('宋体', 10))
+        self.label_state[10].config(text='升频状态', font=('宋体', 10))
+        self.label_state[11].config(text='频率稳定', font=('宋体', 10))
+        self.label_state[12].config(text='报警降频', font=('宋体', 10))
+        self.label_state[13].config(text='故障状态', font=('宋体', 10))
+        self.label_state[14].config(text='单相' + '\n' + '运行状态', font=('宋体', 10))
+        self.label_state[15].config(text='运行状态', font=('宋体', 10))
+
+        for i in range(16):
+            self.register2_buttons_break1.append([])
+            self.register2_buttons_break1[i] = tk.Button(self.label_frame_break1, text="Bit{}".format(15 - i),
+                                                         relief="raised", width=9, height=1)
+            self.register2_buttons_break1[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            toggle_func = self.create_toggle_func(self.register2_buttons_break1[i])
+            self.register2_buttons_break1[i].config(command=toggle_func)
+        self.register2_buttons_break1[0].config(bg='grey')
+        self.register2_buttons_break1[2].config(bg='grey')
+        self.register2_buttons_break1[3].config(bg='grey')
+        for i in range(3):
+            self.register2_buttons_break1[6 + i].config(bg='grey')
+        self.register2_buttons_break1[10].config(bg='grey')
+        for i in range(3):
+            self.register2_buttons_break1[13 + i].config(bg='grey')
+
+        self.label_break1 = []
+        for i in range(16):
+            self.label_break1.append([])
+            self.label_break1[i] = ttk.Label(self.label_frame_break1, text="保留")
+            self.label_break1[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+        self.label_break1[0].config(text='通讯故障', font=('宋体', 10))
+        self.label_break1[2].config(text='驱动板温' + '\n' + '传感故障', font=('宋体', 10))
+        self.label_break1[3].config(text='参数校验' + '\n' + '型号错误', font=('宋体', 10))
+        self.label_break1[6].config(text='电机漏电', font=('宋体', 10))
+        self.label_break1[7].config(text='母线欠压', font=('宋体', 10))
+        self.label_break1[8].config(text='母线过压', font=('宋体', 10))
+        self.label_break1[10].config(text='驱板过温', font=('宋体', 10))
+        self.label_break1[13].config(text='驱动内障', font=('宋体', 10))
+        self.label_break1[14].config(text='驱动失败', font=('宋体', 10))
+        self.label_break1[15].config(text='驱动过流', font=('宋体', 10))
+
+        for i in range(16):
+            self.register2_buttons_break2.append([])
+            self.register2_buttons_break2[i] = tk.Button(self.label_frame_break2, text="Bit{}".format(15 - i),
+                                                         relief="raised", width=9, height=1)
+            self.register2_buttons_break2[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            toggle_func = self.create_toggle_func(self.register2_buttons_break2[i])
+            self.register2_buttons_break2[i].config(command=toggle_func)
+        for i in range(9):
+            self.register2_buttons_break2[2 + i].config(bg='grey')
+        for i in range(4):
+            self.register2_buttons_break2[12 + i].config(bg='grey')
+
+        self.label_break2 = []
+        for i in range(16):
+            self.label_break2.append([])
+            self.label_break2[i] = ttk.Label(self.label_frame_break2, text="保留")
+            self.label_break2[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+
+        self.label_break2[2].config(text='驱动软件' + '\n' + '保护异常', font=('宋体', 10))
+        self.label_break2[3].config(text='参考电压' + '\n' + '异常', font=('宋体', 10))
+        self.label_break2[4].config(text='驱动参数' + '\n' + '校验失败', font=('宋体', 10))
+        self.label_break2[5].config(text='MCU' + '\n' + 'FLASH', font=('宋体', 10))
+        self.label_break2[6].config(text='MCU' + '\n' + '时钟故障', font=('宋体', 10))
+        self.label_break2[7].config(text='MCU' + '\n' + '寄存器', font=('宋体', 10))
+        self.label_break2[8].config(text='MCU' + '\n' + 'RAM', font=('宋体', 10))
+        self.label_break2[9].config(text='驱动输出' + '\n' + '电流缺相', font=('宋体', 10))
+        self.label_break2[10].config(text='驱动转速', font=('宋体', 10))
+        self.label_break2[12].config(text='Fan2' + '\n' + '硬件过流', font=('宋体', 10))
+        self.label_break2[13].config(text='Fan1' + '\n' + '硬件过流', font=('宋体', 10))
+        self.label_break2[14].config(text='驱动过载', font=('宋体', 10))
+        self.label_break2[15].config(text='软件过流', font=('宋体', 10))
+
+        self.label_sw = []
+        for i in range(10):
+            self.register2_buttons_sw.append([])
+            self.register2_buttons_sw[i] = tk.Button(self.label_frame_sw, text="Bit{}".format(3 - i),
+                                                     relief="raised", width=9, height=1)
+            self.register2_buttons_sw[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+
+            toggle_func = self.create_toggle_func(self.register2_buttons_sw[i])
+            self.register2_buttons_sw[i].config(command=toggle_func)
+
+        for i in range(10):
+            self.register2_buttons_sw[i].config(bg='grey')
+
+        for i in range(10):
+            self.label_sw.append([])
+            self.label_sw[i] = ttk.Label(self.label_frame_sw, text="SW%d" % (10 - i))
+            self.label_sw[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+        self.label_sw[0].config(text='输入电流' + '\n' + '大报警', font=('宋体', 10))
+        self.label_sw[1].config(text='F/A温度' + '\n' + '高报警', font=('宋体', 10))
+        self.label_sw[2].config(text='F/A电流' + '\n' + '大报警', font=('宋体', 10))
+        self.label_sw[3].config(text='高压开关' + '\n' + '状态', font=('宋体', 10))
+        self.label_sw[4].config(text='串联继电' + '\n' + '器状态', font=('宋体', 10))
+        self.label_sw[5].config(text='并联继电' + '\n' + '器状态', font=('宋体', 10))
+
+        self.combo = Combobox(self.label_frame_sw, values=["DRV060", "DRV180"], width=7)
+        self.combo.bind("<<ComboboxSelected>>", self.update_ui)
+        self.combo.bind('<Return>', lambda event: self.set_data())
+        self.combo.grid(row=2, column=2, padx=2, pady=0)
+        self.combo.current(0)
+        for i in range(11):
+            self.register2_entries_left.append([])
+            self.register2_entries_left[i] = ttk.Entry(self.label_frame_left, width=10)
+            self.register2_entries_left[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=4, pady=0)
+            self.register2_entries_left[i].bind('<Return>', lambda event: self.set_data())
+
+        self.label_left = []
+        for i in range(11):
+            self.label_left.append([])
+            self.label_left[i] = ttk.Label(self.label_frame_left, text="保留")
+            self.label_left[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=0)
+
+        self.label_left[0].config(text='FOC机械' + '\n' + '频率/rpm', font=('宋体', 10))
+        self.label_left[1].config(text='允许最大' + '\n' + '频率/rpm', font=('宋体', 10))
+        self.label_left[2].config(text='交流输入' + '\n' + '电压值/V', font=('宋体', 10))
+        self.label_left[3].config(text='交流输入' + '\n' + '电流值/A', font=('宋体', 10))
+        self.label_left[4].config(text='输出输入' + '\n' + '电压值/V', font=('宋体', 10))
+        self.label_left[5].config(text='相电流值/A', font=('宋体', 10))
+        self.label_left[6].config(text='直流母线' + '\n' + '电压值/V', font=('宋体', 10))
+        self.label_left[7].config(text='F/A温' + '\n' + '度/℃', font=('宋体', 10))
+        self.label_left[8].config(text='散热温度/℃', font=('宋体', 10))
+        self.label_left[9].config(text='电抗温度/℃', font=('宋体', 10))
+        self.label_left[10].config(text='F/A累计运' + '\n' + '行时间/H', font=('宋体', 10))
+
+        # 创建LabelFrame3
+        self.label_frame3 = ttk.LabelFrame(self, text="寄存器（起始地址：2000）", style='Custom.TLabelframe')
+        self.label_frame3.pack(padx=10, pady=5, anchor="nw")
+
+        # 创建存储Entry的数组
+        self.register3_entries = []
+        for i in range(16):
+            self.register3_entries.append([])
+            self.register3_entries[i] = ttk.Entry(self.label_frame3, width=10)
+            self.register3_entries[i].grid(row=i // 8 + 1 * (i // 8), column=i % 8, padx=5, pady=1)
+            self.register3_entries[i].bind('<Return>', lambda event: self.set_data())
+
+        for i in range(4):
+            self.register3_entries[5 + i].insert(0, '0x0000')
+            self.register3_entries[5 + i].config(state='disabled')
+        self.register3_entries[2].insert(0, '0x0000')
+        self.register3_entries[2].config(state='disabled')
+
+        # 创建存储Label的数组
+        self.label_register3 = []
+        for i in range(16):
+            self.label_register3.append([])
+            self.label_register3[i] = ttk.Label(self.label_frame3, text="保留")
+            self.label_register3[i].grid(row=1 + i // 8 + 1 * (i // 8), column=i % 8, padx=2, pady=1)
+        self.label_register3[0].config(text='输出输入' + '\n' + '功率/W', font=('宋体', 10))
+        self.label_register3[1].config(text='MCU' + '\n' + '温度/℃', font=('宋体', 10))
+        self.label_register3[2].config(text='允许最小' + '\n' + '频率/Hz', font=('宋体', 10))
+        self.label_register3[3].config(text='温度降频' + '\n' + '保护值/℃', font=('宋体', 10))
+        self.label_register3[4].config(text='输入电流' + '\n' + '档位', font=('宋体', 10))
+        self.label_register3[9].config(text='高MCU' + '\n' + 'Flash', font=('宋体', 10))
+        self.label_register3[10].config(text='低MCU' + '\n' + 'Flash', font=('宋体', 10))
+        self.label_register3[11].config(text='EEPROM' + '\n' + 'CkSum', font=('宋体', 10))
+        self.label_register3[12].config(text='电机型号', font=('宋体', 10))
+        self.label_register3[13].config(text='软件版本', font=('宋体', 10))
+        self.label_register3[14].config(text='EEPROM' + '\n' + '版本', font=('宋体', 10))
+        self.label_register3[15].config(text='控制器' + '\n' + '类型', font=('宋体', 10))
+        self.start1()
+        self.set_data()
+        self.count = 1
+
+    def convert_to_hex(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = int(text)
+                hex_num = hex(num)[2:].zfill(4)
+                high = int(hex_num[:2], 16)
+                low = int(hex_num[2:], 16)
+                return high, low
+        elif text.isdigit():  # 检查输入的是否为数字
+            num = int(text)  # 将输入的文本转换为整数
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        elif '.' in text:
+            num = float(text)  # 将输入的文本转换为浮点数
+            num = int(num * 10)
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        else:
+            high = 0
+            low = 0
+            return high, low
+
+    def convert_to_hex1(self, text):
+        if text.startswith('-'):
+            text = text[1:]  # 去掉负号
+            if text.isdigit():
+                num = int(text)
+                hex_num = hex(num)[2:].zfill(4)
+                high = int(hex_num[:2], 16)
+                low = int(hex_num[2:], 16)
+                return high, low
+        elif text.isdigit():  # 检查输入的是否为数字
+            num = int(text)  # 将输入的文本转换为整数
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        elif '.' in text:
+            num = float(text)  # 将输入的文本转换为浮点数
+            num = int(num * 100)
+            hex_num = hex(num)[2:].zfill(4)  # 将整数转换为4位16进制数，并用0填充
+            high = int(hex_num[:2], 16)  # 将高两位从十六进制转换为十进制
+            low = int(hex_num[2:], 16)  # 将低两位从十六进制转换为十进制
+            return high, low
+        else:
+            high = 0
+            low = 0
+            return high, low
+
+    def update_ui(self, event):
+        selected_option = self.combo.get()
+        if selected_option == 'DRV180':
+            self.register2_buttons_sw[3].config(relief="raised", bg='SystemButtonFace')
+            self.register2_buttons_sw[6].config(relief="raised", bg='SystemButtonFace')
+
+        else:
+            self.register2_buttons_sw[3].config(bg='grey')
+            self.register2_buttons_sw[6].config(bg='grey')
+
+    def create_toggle_func(self, btn):
+
+        def toggle():
+            sum = 0
+            sum1 = 0
+            sum2 = 0
+            if btn.config('relief')[-1] == 'raised':
+                btn.config(relief="sunken", bg="red")
+                self.set_data1()
+            else:
+                btn.config(relief="raised", bg="grey")
+                self.set_data1()
+
+        return toggle
+
+    def start1(self):
+        self.flag1.set()
+        self.T1 = threading.Thread(target=self.compressor)
+        self.T1.setDaemon(True)
+        self.T1.start()
+
+    def compressor(self):
+        update_data = []
+
+        while True:
+            time.sleep(1)
+            try:
+                if (self.register1_entries[1].get() == '0x0000' or self.register1_entries[1].get() == '0x0002' or
+                        self.register1_entries[1].get() == ''):
+                    self.register2_entries_left[0].delete(0, 'end')  # 清除文本框中的内容
+                    self.register2_entries_left[0].insert(0, '0')  # 插入新的数值
+                    if len(data_register2[int(self.compressor_name) - 1]) > 0:
+                        data_register2[int(self.compressor_name) - 1][13] = 0
+                        data_register2[int(self.compressor_name) - 1][14] = 0
+                        crch, crcl = self.CRC16(data_register2[int(self.compressor_name) - 1],
+                                                len(data_register2[int(self.compressor_name) - 1]) - 2)
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 2] = crcl
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 1] = crch
+                elif (self.register1_entries[1].get() == '0x0003'):
+                    self.register2_entries_left[0].delete(0, 'end')  # 清除文本框中的内容
+                    self.register2_entries_left[0].insert(0, self.register1_entries[0].get())  # 插入新的数值
+                    if len(data_register2[int(self.compressor_name) - 1]) > 0:
+                        high, low = self.convert_to_hex(self.register2_entries_left[0].get())
+                        data_register2[int(self.compressor_name) - 1][13] = int(high)
+                        data_register2[int(self.compressor_name) - 1][14] = int(low)
+                        crch, crcl = self.CRC16(data_register2[int(self.compressor_name) - 1],
+                                                len(data_register2[int(self.compressor_name) - 1]) - 2)
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 2] = crcl
+                        data_register2[int(self.compressor_name) - 1][
+                            len(data_register2[int(self.compressor_name) - 1]) - 1] = crch
+                if len(data_register1[int(self.compressor_name) - 1]) > 0:
+                    for i in range(7, 7 + 2 * 8, 2):
+                        temp = (data_register1[int(self.compressor_name) - 1][i] << 8) | \
+                               data_register1[int(self.compressor_name) - 1][i + 1]
+                        update_data.append(temp)
+                    if (len(update_data)) == 8:
+                        for i in range(len(update_data)):
+                            if i == 2:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                if update_data[i] == 0:
+                                    self.register1_entries[i].insert(0, "正常模式")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                elif update_data[i] == 5:
+                                    self.register1_entries[i].insert(0, "FCT模式")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                elif update_data[i] == 10:
+                                    self.register1_entries[i].insert(0, "StrifeTest模式")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                else:
+                                    self.register1_entries[i].insert(0, "内部操作模式")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                            elif i == 7:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                if update_data[i] == 2:
+                                    self.register1_entries[i].insert(0, "80%")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                elif update_data[i] == 3:
+                                    self.register1_entries[i].insert(0, "70%")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                elif update_data[i] == 4:
+                                    self.register1_entries[i].insert(0, "60%")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                                else:
+                                    self.register1_entries[i].insert(0, "100%")  # 在文本框中插入数据
+                                    self.register1_entries[i].config(state='readonly')
+                            elif i == 1 or i == 3 or i == 6:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                hex_value = hex(update_data[i])  # 将整数转换为十六进制字符串
+                                hex_value = hex_value[2:]  # 去掉开头的 '0x'
+                                hex_value = hex_value.zfill(4)  # 用 '0' 左侧填充至两位
+                                self.register1_entries[i].insert(0, "0x" + str(hex_value))  # 在文本框中插入数据
+                                self.register1_entries[i].config(state='readonly')
+                            else:
+                                self.register1_entries[i].config(state='normal')
+                                self.register1_entries[i].delete(0, "end")  # 清空文本框中的内容
+                                self.register1_entries[i].insert(0, str(update_data[i]))  # 在文本框中插入数据
+                                self.register1_entries[i].config(state='readonly')
+
+                        update_data = []
+            except Exception as e:
+                print("An exception occurred111:", e)
+
+    def set_data(self):
+
+        register_data = [int(self.compressor_name), 3, 32]
+        data1 = ''
+        for i in range(len(self.register2_buttons_state)):
+            temp = '0' if self.register2_buttons_state[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break1)):
+            temp = '0' if self.register2_buttons_break1[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break2)):
+            temp = '0' if self.register2_buttons_break2[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(3):
+            temp = '0' if self.register2_buttons_sw[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        data1 = "0000000000000" + data1
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+
+        for i in range(7):
+            temp = '0' if self.register2_buttons_sw[3 + i].config('relief')[-1] == 'raised' else '1'
+            data1 = data1 + temp
+        data1 = data1[0] + "00000" + data1[1:3] + "0000" + data1[3:]
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_entries_left)):
+            if i == 3 or i == 5:
+
+                high, low = self.convert_to_hex1(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register2[int(self.compressor_name) - 1] = register_data.copy()
+        register_data = [int(self.compressor_name), 3, 32]
+        for i in range(len(self.register3_entries)):
+            if 1 <= i <= 3:
+
+                high, low = self.convert_to_hex1(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register3[int(self.compressor_name) - 1] = register_data.copy()
+        if self.count == 1:
+            msg.showinfo("Successfully", str(int(self.compressor_name) // 2 + 1) + "号风机保存成功！")
+
+    def set_data1(self):
+
+        register_data = [int(self.compressor_name), 3, 32]
+        data1 = ''
+        for i in range(len(self.register2_buttons_state)):
+            temp = '0' if self.register2_buttons_state[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break1)):
+            temp = '0' if self.register2_buttons_break1[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_buttons_break2)):
+            temp = '0' if self.register2_buttons_break2[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(3):
+            temp = '0' if self.register2_buttons_sw[i].config('relief')[-1] == 'raised' else '1'
+            data1 += temp
+        data1 = "0000000000000" + data1
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+
+        for i in range(7):
+            temp = '0' if self.register2_buttons_sw[3 + i].config('relief')[-1] == 'raised' else '1'
+            data1 = data1 + temp
+        data1 = data1[0] + "00000" + data1[1:3] + "0000" + data1[3:]
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(7):
+            temp = '0' if self.register2_buttons_sw[3 + i].config('relief')[-1] == 'raised' else '1'
+            data1 = data1 + temp
+        data1 = data1[0] + "00000" + data1[1:3] + "0000" + data1[3:]
+        decimal_value = int(data1, 2)
+        hex_string = hex(decimal_value)[2:].zfill(4)
+        byte1 = hex_string[:2]
+        byte2 = hex_string[2:]
+        register_data.append(int(byte1, 16))
+        register_data.append(int(byte2, 16))
+        data1 = ''
+        for i in range(len(self.register2_entries_left)):
+            if i == 3 or i == 5:
+
+                high, low = self.convert_to_hex1(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register2_entries_left[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register2[int(self.compressor_name) - 1] = register_data.copy()
+        register_data = [int(self.compressor_name), 3, 32]
+        for i in range(len(self.register3_entries)):
+            if 1 <= i <= 3:
+
+                high, low = self.convert_to_hex1(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+            else:
+                high, low = self.convert_to_hex(self.register3_entries[i].get())
+                register_data.append(int(high))
+                register_data.append(int(low))
+        crch, crcl = self.CRC16(register_data, len(register_data))
+        register_data.append(crcl)
+        register_data.append(crch)
+        data_register3[int(self.compressor_name) - 1] = register_data.copy()
+
+    def CRC16(self, pu8Msg, u16Len):
+        u16Sum = 0xFFFF
+        for i16Tmp1 in range(u16Len):
+            u16Sum ^= pu8Msg[i16Tmp1]
+            for i16Tmp2 in range(8):
+                if u16Sum & 0x0001:
+                    u16Sum = u16Sum >> 1
+                    u16Sum ^= 0xA001
+                else:
+                    u16Sum = u16Sum >> 1
+        return (u16Sum >> 8), (u16Sum & 0xFF)
+
+
+module_frame = ttk.Labelframe(root, text="变频驱动状态")
+module_frame.place(relx=0.447, rely=0, relwidth=0.55, relheight=1)
+
+# 创建一个Notebook用于容纳所有选项卡
+notebook = ttk.Notebook(module_frame)
+notebook.pack(padx=0, pady=0, fill='both', expand=True)
+ser_lock = threading.Lock()
+
+frame_com = ttk.LabelFrame(root, text="串口设置:")
+label_P = ttk.Label(frame_com, text='串 口:', font=('宋体', 10))
+label_P.grid(row=0, column=0, padx=1.5)
+com_P = Combobox(frame_com)
+com_P.grid(row=0, column=1, padx=1.5)
+com_P['value'] = list(select_P)
+com_P.current(1)
+label_E = ttk.Label(frame_com, text='波特率:', font=('宋体', 10))
+label_E.grid(row=1, column=0, padx=1.5)
+com_E = Combobox(frame_com)
+com_E.grid(row=1, column=1, padx=1.5)
+com_E['value'] = list(select_E)
+com_E.current(0)
+label_D = ttk.Label(frame_com, text='数据位:', font=('宋体', 10))
+label_D.grid(row=2, column=0, padx=1.5)
+com_D = Combobox(frame_com)
+com_D.grid(row=2, column=1, padx=1.5)
+com_D['value'] = list(select_D)
+com_D.current(0)
+com_A = Combobox(frame_com)
+com_A.grid(row=3, column=1, padx=1.5)
+label_A = ttk.Label(frame_com, text='校 验:', font=('宋体', 10))
+label_A.grid(row=3, column=0, padx=1.5)
+com_A['value'] = list(select_A)
+com_A.current(0)
+com_S = Combobox(frame_com)
+com_S.grid(row=4, column=1, padx=1.5)
+label_S = ttk.Label(frame_com, text='停止位:', font=('宋体', 10))
+label_S.grid(row=4, column=0, padx=1.5)
+com_S['value'] = list(select_S)
+com_S.current(0)
+light_uart = tk.Canvas(frame_com, width=20, height=20)
+light_uart.place(relx=0.85, rely=0.816)
+my_light = light_uart.create_oval(2, 2, 18, 18, outline="SystemButtonFace")
+light_uart.itemconfig(my_light, fill="red")
+button_con_com = ttk.Button(frame_com, text="打开串口", width=10, command=lambda: On_Serial(com_P.get(), com_E.get(),
+                                                                                        com_S.get(), com_D.get(),
+                                                                                        com_A.get()))
+button_con_com.grid(row=5, column=1, padx=1.5, pady=8)
+
+frame_com.place(relx=0.0, rely=0.00, relwidth=0.21, relheight=0.18)
+
+
+def toggle_serial_components(state):
+    com_P['state'] = state
+    com_E['state'] = state
+    com_D['state'] = state
+    com_A['state'] = state
+    com_S['state'] = state
+    button_fresh['state'] = state
+
+
+def fresh_com():
+    ports_list = list(serial.tools.list_ports.comports())
+    for i in range(len(ports_list)):
+        select_P.add(str(ports_list[i]))
+    com_P['value'] = list(select_P)
+    com_P.current(1)
+
+
+button_fresh = ttk.Button(frame_com, text="刷新", width=8, command=fresh_com)
+button_fresh.grid(row=5, column=0, padx=1.5, pady=8)
+
+try:
+    # Try to open the image file
+    image = Image.open("jci1.png")
+
+    # Create a PhotoImage object from the image
+    photo = ImageTk.PhotoImage(image)
+
+    # Create a label and set the image to it
+    label = tk.Label(root, image=photo)
+    label.place(relx=0.25, rely=0.036)
+
+except FileNotFoundError:
+    # Handle the case when the image file is not found
+    pass
+
+frame_txt = ttk.LabelFrame(root, text='数据流')
+Data_txt = scrolledtext.ScrolledText(frame_txt, bg="white", fg="black", wrap="none", undo=False)
+Data_txt.place(relx=0, rely=0, relwidth=1, relheight=1)
+frame_txt.place(relx=0.0, rely=0.18, relwidth=0.445, relheight=0.82)
+Data_txt.tag_configure("bold", font=("宋体", 11))
+Data_txt.tag_configure("normal", font=("宋体", 11))
+Data_txt.tag_configure("red", foreground="#E30420")
+Data_txt.tag_configure("blue", foreground="#5239C4")
+Data_txt.tag_configure("green", foreground="#0080CC")
+Data_txt.tag_configure("black", foreground="#040404")
+
+
+def clear_text():
+    Data_txt.delete('1.0', tk.END)
+
+
+clear_button = ttk.Button(root, text="清空数据流", width=10, command=clear_text)
+clear_button.place(relx=0.3, rely=0.16)
+clear_button.lift()
+
+
+def On_Serial(port, bps, stopbits, bytesize, parity1):
+    global ser_a, T
+    if ser_a is None:
+        parity = None
+        if parity1 == 'PARITY_ODD':
+            parity = serial.PARITY_ODD
+        elif parity1 == 'PARITY_EVEN':
+            parity = serial.PARITY_EVEN
+
+        stopbits = float(stopbits)
+        bytesize = int(bytesize)
+        if parity == serial.PARITY_ODD or parity == serial.PARITY_EVEN:
+            ser_a = serial.Serial(port[0] + port[1] + port[2] + port[3] + port[4], bps, stopbits=stopbits,
+                                  bytesize=bytesize, timeout=0, parity=parity)
+        else:
+            ser_a = serial.Serial(port[0] + port[1] + port[2] + port[3] + port[4], bps, stopbits=stopbits,
+                                  bytesize=bytesize, timeout=0)
+
+        light_uart.itemconfig(my_light, fill="yellow")
+        button_con_com.configure(text="关闭串口")
+        start()
+        toggle_serial_components('disabled')
+    elif ser_a.isOpen():
+        flag.clear()
+        button_con_com.configure(text="打开串口")
+        light_uart.itemconfig(my_light, fill="red")
+        ser_a.close()
+        ser_a = None
+        toggle_serial_components('normal')
+        if T.is_alive():
+            flag.set()
+            T.join()
+
+
+def start():
+    global T
+    if ser_a is not None and ser_a.isOpen():
+        flag.set()
+        light_uart.itemconfig(my_light, fill="green")
+        T = threading.Thread(target=processing_data)
+        T.setDaemon(True)
+        T.start()
+
+
+def processing_data():  # 数据流收发处理
+    data_temp = []
+    data = []
+    start_fresh()
+    ser_a.flushInput()
+    data_send = [0, 16, 0, 0, 0, 16, 0, 0]
+    while ser_a != None:
+        time.sleep(0.01)
+        try:
+            if ser_a != None:
+                data_temp += ser_a.read_all()
+                # if data_temp!=[]:
+                #     print(data_temp)
+
+            if len(data_temp) > 0 and data_temp[0] not in range(32):
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 1 and data_temp[0] in range(32) and data_temp[1] not in [0x03, 0x06, 0x10]:
+                data_temp.remove(data_temp[0])
+                data_temp.remove(data_temp[0])
+            elif len(data_temp) > 2 and data_temp[0] in range(32) and data_temp[1] == 0x10:
+                if len(data_temp) > 6:
+                    if len(data_temp) > (int(data_temp[6]) + 8):
+                        for i in range(int(data_temp[6]) + 9):
+                            data.append(data_temp[i])
+                        for i in range(int(data_temp[6]) + 9):
+                            data_temp.remove(data_temp[0])
+                        crch, crcl = CRC16(data, int(data[6]) + 7)
+                        if (crch == data[int(data[6]) + 8] and crcl == data[int(data[6]) + 7]):
+                            data_register1[data[0] - 1] = data
+
+                            if data[0] % 2 == 1:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 写风机" + str(
+                                                    data[0] // 2 + 1) + ' Rx:',
+                                                "bold blue")
+                            else:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 写压机" + str(
+                                                    data[0] // 2) + ' Rx:',
+                                                "bold red")
+                            for i in range(len(data)):
+                                data_print = hex(data[i])
+                                data_print = data_print.replace('0x', '')
+                                if len(data_print) == 1:
+                                    Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                else:
+                                    Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                            Data_txt.insert(END, '\n')
+                            data_send[0] = data[0]
+                            data_send[2] = data[2]
+                            data_send[3] = data[3]
+                            crch, crcl = CRC16(data, 6)
+                            data_send[6] = crcl
+                            data_send[7] = crch
+                            ser_a.write(data_send)
+                            if data[0] % 2 == 1:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 写风机" + str(
+                                                    data[0] // 2 + 1) + ' Tx:',
+                                                "bold blue")
+                            else:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 写压机" + str(
+                                                    data[0] // 2) + ' Tx:',
+                                                "bold red")
+                            for i in range(len(data_send)):
+                                data_print = hex(data_send[i])
+                                data_print = data_print.replace('0x', '')
+                                if len(data_print) == 1:
+                                    Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                else:
+                                    Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                            Data_txt.insert(END, '\n')
+                            data = []
+            elif len(data_temp) > 2 and data_temp[0] in range(32) and data_temp[1] == 0x03:
+                if len(data_temp) > 7:
+                    for i in range(8):
+                        data.append(data_temp[i])
+                    for i in range(8):
+                        data_temp.remove(data_temp[0])
+                    crch, crcl = CRC16(data, 6)
+                    if (crch == data[7] and crcl == data[6]):
+                        combined = (data[2] << 8) | data[3]  # 合并数据
+                        if 1099 <= combined <= 1114:
+                            if data[0] % 2 == 1:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 读风机" + str(
+                                                    data[0] // 2 + 1) + ' Rx:',
+                                                "bold blue")
+                            else:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 读压机" + str(
+                                                    data[0] // 2) + ' Rx:',
+                                                "bold red")
+                            for i in range(len(data)):
+                                data_print = hex(data[i])
+                                data_print = data_print.replace('0x', '')
+                                if len(data_print) == 1:
+                                    Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                else:
+                                    Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                            Data_txt.insert(END, '\n')
+                            if len(data_register2[data[0] - 1]) > 0:
+                                ser_a.write(data_register2[data[0] - 1])
+                                if data[0] % 2 == 1:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                        :-3]) + " 读风机" + str(
+                                                        data[0] // 2 + 1) + ' Tx:',
+                                                    "bold blue")
+                                else:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                        :-3]) + " 读压机" + str(
+                                                        data[0] // 2) + ' Tx:',
+                                                    "bold red")
+                                for i in range(len(data_register2[data[0] - 1])):
+                                    data_print = hex(data_register2[data[0] - 1][i])
+                                    data_print = data_print.replace('0x', '')
+                                    if len(data_print) == 1:
+                                        Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                    else:
+                                        Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                                Data_txt.insert(END, '\n')
+                        elif 1999 <= combined <= 2014:
+                            if data[0] % 2 == 1:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 读风机" + str(
+                                                    data[0] // 2 + 1) + ' Rx:',
+                                                "bold blue")
+                            else:
+                                Data_txt.insert(END,
+                                                str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                    :-3]) + " 读压机" + str(
+                                                    data[0] // 2) + ' Rx:',
+                                                "bold red")
+                            for i in range(len(data)):
+                                data_print = hex(data[i])
+                                data_print = data_print.replace('0x', '')
+                                if len(data_print) == 1:
+                                    Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                else:
+                                    Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                            Data_txt.insert(END, '\n')
+                            if len(data_register3[data[0] - 1]) > 0:
+                                ser_a.write(data_register3[data[0] - 1])
+                                if data[0] % 2 == 1:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                        :-3]) + " 读风机" + str(
+                                                        data[0] // 2 + 1) + ' Tx:',
+                                                    "bold blue")
+                                else:
+                                    Data_txt.insert(END,
+                                                    str(datetime.datetime.now().strftime("%H:%M:%S.%f")[
+                                                        :-3]) + " 读压机" + str(
+                                                        data[0] // 2) + ' Tx:',
+                                                    "bold red")
+                                for i in range(len(data_register3[data[0] - 1])):
+                                    data_print = hex(data_register3[data[0] - 1][i])
+                                    data_print = data_print.replace('0x', '')
+                                    if len(data_print) == 1:
+                                        Data_txt.insert(END, '0%s ' % data_print.upper(), "normal black")
+                                    else:
+                                        Data_txt.insert(END, '%s ' % data_print.upper(), "normal black")
+                                Data_txt.insert(END, '\n')
+
+                        data = []
+
+            else:
+                data = []
+
+        except Exception as e:
+            print("An exception occurred555:", e)
+
+
+def fresh():
+    while True:
+        try:
+            Data_txt.see(tk.END)
+            time.sleep(5)
+        except Exception as e:
+            print("An exception occurred666:", e)
+
+
+def start_fresh():
+    global T1, flag1
+    flag1.set()
+    T1 = threading.Thread(target=fresh)
+    T1.setDaemon(True)
+    T1.start()
+
+
+def CRC16(pu8Msg, u16Len):
+    u16Sum = 0xFFFF
+    for i16Tmp1 in range(u16Len):
+        u16Sum ^= pu8Msg[i16Tmp1]
+        for i16Tmp2 in range(8):
+            if u16Sum & 0x0001:
+                u16Sum = u16Sum >> 1
+                u16Sum ^= 0xA001
+            else:
+                u16Sum = u16Sum >> 1
+    return (u16Sum >> 8), (u16Sum & 0xFF)
+
+
+def update_tabs():
+    for i in range(4):
+        module_state_tab = Compressor1Tab(notebook, str(i * 2 + 1))
+        notebook.add(module_state_tab, text="0" + str(i + 1) + "号风机")
+        notebook.tab(module_state_tab, state='normal')  # 如果选项卡不存在，则添加并显示它
+
+    for i in range(2):
+        module_state_tab = CompressorTab(notebook, str((i + 1) * 2))
+        notebook.add(module_state_tab, text="0" + str(i + 1) + "号压机")
+        notebook.tab(module_state_tab, state='normal')  # 如果选项卡不存在，则添加并显示它
+
+    # 选中第一个可见选项卡
+    visible_tabs = [tab for tab in notebook.tabs() if notebook.tab(tab, "state") != 'hidden']
+    if visible_tabs:
+        notebook.select(visible_tabs[0])
+
+
+update_tabs()
+
+root.mainloop()
